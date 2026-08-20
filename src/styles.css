@@ -257,8 +257,7 @@ button {
 }
 
 body[data-tone="smoke"] .quota-card,
-body[data-tone="smoke"] .mini-stat,
-body[data-tone="smoke"] .settings-panel {
+body[data-tone="smoke"] .mini-stat {
   background: rgb(10 18 25 / 0.2);
 }
 
@@ -497,18 +496,22 @@ body[data-tone="smoke"] .settings-panel {
   cursor: pointer;
 }
 
-.glass-panel.settings-mode {
+.glass-panel.settings-mode,
+.glass-panel.trend-mode {
   background: rgb(var(--glass-base));
 }
 
 .glass-panel.settings-mode .topbar,
-.glass-panel.settings-mode .content-area {
+.glass-panel.settings-mode .content-area,
+.glass-panel.trend-mode .topbar,
+.glass-panel.trend-mode .content-area {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
 }
 
-.settings-panel {
+.settings-panel,
+.trend-panel {
   position: absolute;
   z-index: 30;
   inset: 6px;
@@ -526,21 +529,25 @@ body[data-tone="smoke"] .settings-panel {
   scrollbar-width: none;
 }
 
-.settings-panel::-webkit-scrollbar {
+.settings-panel::-webkit-scrollbar,
+.trend-panel::-webkit-scrollbar {
   display: none;
 }
 
-.settings-panel.is-open {
+.settings-panel.is-open,
+.trend-panel.is-open {
   opacity: 1;
   pointer-events: auto;
   transform: none;
 }
 
-body[data-tone="smoke"] .settings-panel {
+body[data-tone="smoke"] .settings-panel,
+body[data-tone="smoke"] .trend-panel {
   background: rgb(var(--glass-base));
 }
 
-.settings-panel .icon-button {
+.settings-panel .icon-button,
+.trend-panel .icon-button {
   border-color: rgb(var(--text) / 0.08);
   background: rgb(var(--text) / 0.045);
 }
@@ -683,6 +690,174 @@ body[data-tone="smoke"] .settings-panel {
   width: 100%;
   margin-top: 10px;
   font-size: 10px;
+}
+
+.trend-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trend-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.trend-heading p,
+.trend-note {
+  margin: 3px 0 0;
+  color: rgb(var(--muted));
+  font-size: 10px;
+}
+
+.trend-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.trend-summary > div {
+  padding: 10px 12px;
+  border: 1px solid rgb(var(--text) / 0.1);
+  border-radius: 12px;
+  background: rgb(var(--text) / 0.04);
+}
+
+.trend-summary span,
+.trend-summary strong {
+  display: block;
+}
+
+.trend-summary span {
+  color: rgb(var(--muted));
+  font-size: 9px;
+}
+
+.trend-summary strong {
+  margin-top: 3px;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trend-chart {
+  display: grid;
+  height: 190px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 14px 10px 8px;
+  border: 1px solid rgb(var(--text) / 0.08);
+  border-radius: 14px;
+  background: rgb(var(--text) / 0.025);
+}
+
+.trend-day {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 18px minmax(0, 1fr) 18px;
+  align-items: end;
+  gap: 4px;
+  text-align: center;
+}
+
+.trend-value,
+.trend-label {
+  overflow: hidden;
+  color: rgb(var(--muted));
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trend-track {
+  position: relative;
+  width: min(24px, 70%);
+  height: 100%;
+  justify-self: center;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(var(--text) / 0.065);
+}
+
+.trend-bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  min-height: 4px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, var(--accent), rgb(var(--accent-rgb) / 0.5));
+}
+
+.trend-note {
+  margin-top: 12px;
+  line-height: 1.45;
+}
+
+.glass-panel.mini-mode .topbar {
+  min-height: 40px;
+  padding: 6px 8px 4px;
+}
+
+.glass-panel.mini-mode .brand {
+  gap: 6px;
+}
+
+.glass-panel.mini-mode .brand-orb {
+  width: 16px;
+  height: 16px;
+  flex-basis: 16px;
+}
+
+.glass-panel.mini-mode .brand h1 {
+  font-size: 13px;
+}
+
+.glass-panel.mini-mode .brand p,
+.glass-panel.mini-mode .plan-badge,
+.glass-panel.mini-mode .secondary-action,
+.glass-panel.mini-mode .mini-stats,
+.glass-panel.mini-mode .quota-meta,
+.glass-panel.mini-mode .quota-foot,
+.glass-panel.mini-mode .quota-insight {
+  display: none;
+}
+
+.glass-panel.mini-mode .content-area {
+  padding: 0 6px 6px;
+}
+
+.glass-panel.mini-mode .quota-list {
+  overflow: hidden;
+}
+
+.glass-panel.mini-mode .quota-card {
+  padding: 6px 8px;
+  border-radius: 11px;
+}
+
+.glass-panel.mini-mode .window-pill {
+  min-width: 28px;
+  padding: 3px 4px;
+  font-size: 9px;
+}
+
+.glass-panel.mini-mode .quota-title {
+  font-size: 11px;
+}
+
+.glass-panel.mini-mode .remaining-block strong {
+  font-size: 16px;
+}
+
+.glass-panel.mini-mode .progress-track {
+  height: 5px;
+  margin-top: 6px;
 }
 
 .resize-handle {

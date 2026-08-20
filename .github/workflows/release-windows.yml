@@ -1,0 +1,80 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Verify
+        run: npm run check
+
+      - name: Build portable executable
+        run: npm run tauri build -- --no-bundle --no-sign
+
+      - name: Sign application executable when certificate is configured
+        shell: pwsh
+        run: ./scripts/sign-windows.ps1 -Paths "src-tauri/target/release/codex-usage-hud.exe"
+
+      - name: Build NSIS installer from the built executable
+        run: npm run tauri bundle -- --bundles nsis --no-sign
+
+      - name: Sign installer when certificate is configured
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "找不到 NSIS 安裝檔" }
+          ./scripts/sign-windows.ps1 -Paths $installer.FullName
+
+      - name: Prepare release files and checksums
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $out = "dist-release"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "找不到 NSIS 安裝檔" }
+
+          $setupName = "Codex.Usage.HUD_${version}_x64-setup.exe"
+          $portableName = "Codex.Usage.HUD_${version}_x64-portable.exe"
+          Copy-Item $installer.FullName "$out/$setupName"
+          Copy-Item "src-tauri/target/release/codex-usage-hud.exe" "$out/$portableName"
+
+          Get-ChildItem "$out/*.exe" | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content "$out/SHA256SUMS.txt" -Encoding ascii
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist-release/*.exe
+            dist-release/SHA256SUMS.txt

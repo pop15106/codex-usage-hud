@@ -1,9 +1,14 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification
+} from "@tauri-apps/plugin-notification";
 
 const appWindow = getCurrentWindow();
 
@@ -13,6 +18,9 @@ const DEFAULT_SETTINGS = {
   tone: "ice",
   alwaysOnTop: true,
   autostart: false,
+  notificationsEnabled: true,
+  warningThreshold: 25,
+  criticalThreshold: 10,
   refreshSeconds: 180
 };
 
@@ -24,13 +32,25 @@ const ACCENT_PRESETS = [
   { name: "月霧", value: "#A9B8C6" }
 ];
 
+const WINDOW_STATE_KEY = "codex-usage-hud.window-state";
+const ALERT_STATE_KEY = "codex-usage-hud.alert-state";
+const MINI_MODE_KEY = "codex-usage-hud.mini-mode";
+const NORMAL_CONSTRAINTS = { minWidth: 300, minHeight: 170 };
+const MINI_CONSTRAINTS = { minWidth: 260, minHeight: 108 };
+const MINI_SIZE = { width: 300, height: 118 };
+
 const state = {
   snapshot: null,
   loading: true,
   error: null,
   settingsOpen: false,
+  trendOpen: false,
+  miniMode: localStorage.getItem(MINI_MODE_KEY) === "true",
   settings: loadSettings(),
-  preSettingsSize: null,
+  prePanelSize: null,
+  preMiniSize: null,
+  geometrySaveTimer: null,
+  notificationPermission: null,
   nowTimer: null
 };
 
@@ -45,6 +65,166 @@ function loadSettings() {
 
 function saveSettings() {
   localStorage.setItem("codex-usage-hud.settings", JSON.stringify(state.settings));
+}
+
+function loadStoredJson(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getLogicalInnerSize() {
+  const physicalSize = await appWindow.innerSize();
+  const scaleFactor = await appWindow.scaleFactor();
+  return physicalSize.toLogical(scaleFactor);
+}
+
+async function restoreWindowGeometry() {
+  const saved = loadStoredJson(WINDOW_STATE_KEY);
+  if (!saved) return;
+
+  try {
+    if (saved.size && Number.isFinite(saved.size.width) && Number.isFinite(saved.size.height)) {
+      await appWindow.setSize(new PhysicalSize(saved.size.width, saved.size.height));
+    }
+    if (saved.position && Number.isFinite(saved.position.x) && Number.isFinite(saved.position.y)) {
+      await appWindow.setPosition(new PhysicalPosition(saved.position.x, saved.position.y));
+    }
+  } catch (error) {
+    console.error("無法恢復 HUD 位置與大小", error);
+  }
+}
+
+async function saveWindowGeometry() {
+  try {
+    const previous = loadStoredJson(WINDOW_STATE_KEY) ?? {};
+    const position = await appWindow.outerPosition();
+    const next = {
+      ...previous,
+      position: { x: position.x, y: position.y }
+    };
+
+    if (!state.settingsOpen && !state.trendOpen && !state.miniMode) {
+      const size = await appWindow.innerSize();
+      next.size = { width: size.width, height: size.height };
+    }
+
+    localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify(next));
+  } catch (error) {
+    console.error("無法保存 HUD 位置與大小", error);
+  }
+}
+
+function scheduleGeometrySave() {
+  window.clearTimeout(state.geometrySaveTimer);
+  state.geometrySaveTimer = window.setTimeout(() => saveWindowGeometry(), 220);
+}
+
+async function ensureNotificationPermission() {
+  if (!state.settings.notificationsEnabled) return false;
+  if (state.notificationPermission === true) return true;
+  if (state.notificationPermission === false) return false;
+
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      granted = (await requestPermission()) === "granted";
+    }
+    state.notificationPermission = granted;
+    return granted;
+  } catch (error) {
+    state.notificationPermission = false;
+    console.error("無法取得通知權限", error);
+    return false;
+  }
+}
+
+function effectiveRisk(item) {
+  const remaining = clamp(Number(item?.remainingPercent) || 0, 0, 100);
+  if (remaining <= state.settings.criticalThreshold) return "critical";
+  if (remaining <= state.settings.warningThreshold) return "warning";
+  if (item?.risk === "critical" || item?.risk === "warning") return item.risk;
+  return "safe";
+}
+
+function codexWindowsFrom(snapshot) {
+  return (snapshot?.windows ?? []).filter(isCodexWindow);
+}
+
+async function processSnapshotAlerts(snapshot) {
+  const windows = codexWindowsFrom(snapshot);
+  const item = windows.find((entry) => entry.windowKind === "primary") ?? windows[0];
+  if (!item) return;
+
+  const remaining = clamp(Number(item.remainingPercent) || 0, 0, 100);
+  const risk = effectiveRisk(item);
+  const previous = loadStoredJson(ALERT_STATE_KEY);
+  const resetChanged = Boolean(previous && previous.resetsAt !== item.resetsAt);
+  const recovered = Boolean(
+    previous
+    && (previous.risk === "critical" || previous.risk === "warning")
+    && risk === "safe"
+    && remaining >= 80
+    && (resetChanged || remaining - Number(previous.remaining || 0) >= 40)
+  );
+
+  let notification = null;
+  if (recovered) {
+    notification = {
+      title: "Codex 額度已恢復",
+      body: `目前剩餘 ${formatPercent(remaining)}，可以繼續使用。`
+    };
+  } else if (risk === "critical" && previous?.risk !== "critical") {
+    notification = {
+      title: "Codex 額度即將耗盡",
+      body: `目前只剩 ${formatPercent(remaining)}，Reset ${formatClock(item.resetsAt)}。`
+    };
+  } else if (risk === "warning" && previous?.risk === "safe") {
+    notification = {
+      title: "Codex 額度偏低",
+      body: `目前剩餘 ${formatPercent(remaining)}，請留意使用速度。`
+    };
+  }
+
+  if (notification && state.settings.notificationsEnabled && await ensureNotificationPermission()) {
+    sendNotification(notification);
+  }
+
+  localStorage.setItem(ALERT_STATE_KEY, JSON.stringify({
+    remaining,
+    risk,
+    resetsAt: item.resetsAt,
+    sampledAt: snapshot.sampledAt
+  }));
+}
+
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getSevenDayUsage(snapshot = state.snapshot) {
+  const tokenMap = new Map(
+    (snapshot?.tokenUsage?.dailyUsageBuckets ?? []).map((item) => [item.startDate, Number(item.tokens) || 0])
+  );
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() - (6 - index));
+    const key = localDateKey(date);
+    return {
+      key,
+      label: `${date.getMonth() + 1}/${date.getDate()}`,
+      tokens: tokenMap.get(key) ?? 0
+    };
+  });
 }
 
 function hexToRgb(hex) {
@@ -132,25 +312,26 @@ function isCodexWindow(item) {
 }
 
 function visibleWindows() {
-  return (state.snapshot?.windows ?? []).filter(isCodexWindow);
+  return codexWindowsFrom(state.snapshot);
 }
 
 function overallRisk() {
   const windows = visibleWindows();
-  if (windows.some((item) => item.risk === "critical")) return "critical";
-  if (windows.some((item) => item.risk === "warning")) return "warning";
+  if (windows.some((item) => effectiveRisk(item) === "critical")) return "critical";
+  if (windows.some((item) => effectiveRisk(item) === "warning")) return "warning";
   return "safe";
 }
 
 function renderWindow(item) {
   const remaining = clamp(Number(item.remainingPercent) || 0, 0, 100);
+  const risk = effectiveRisk(item);
   const rate = Number(item.burnRatePerHour);
   const hasRate = Number.isFinite(rate) && rate > 0;
   const eta = item.etaExhaustedAt ? formatCountdown(item.etaExhaustedAt) : "學習中";
   const title = item.limitName || (item.limitId === "codex" ? "Codex" : item.limitId);
 
   return `
-    <article class="quota-card risk-${escapeHtml(item.risk)}">
+    <article class="quota-card risk-${escapeHtml(risk)}">
       <div class="quota-head">
         <div class="quota-title-wrap">
           <span class="window-pill">${escapeHtml(formatWindow(item.windowDurationMins))}</span>
@@ -173,7 +354,7 @@ function renderWindow(item) {
       </div>
       <div class="quota-insight">
         <span>${hasRate ? `↘ ${rate.toFixed(1)}% / hr` : "↘ 正在建立消耗基線"}</span>
-        <span class="risk-label">${escapeHtml(riskLabel(item.risk))}${item.etaExhaustedAt ? ` · ETA ${escapeHtml(eta)}` : ""}</span>
+        <span class="risk-label">${escapeHtml(riskLabel(risk))}${item.etaExhaustedAt ? ` · ETA ${escapeHtml(eta)}` : ""}</span>
       </div>
     </article>
   `;
@@ -214,8 +395,14 @@ function renderSettings() {
       </div>
 
       ${renderSlider("opacity", "透明度", s.opacity, 40, 100, "%")}
+      ${renderSlider("warningThreshold", "低額度提醒", s.warningThreshold, 15, 40, "%")}
+      ${renderSlider("criticalThreshold", "危險提醒", s.criticalThreshold, 5, 20, "%")}
 
       <div class="setting-switches">
+        <label class="switch-row">
+          <span><b>額度通知</b><small>額度偏低、即將耗盡或恢復時提醒</small></span>
+          <input id="notifications-enabled" type="checkbox" ${s.notificationsEnabled ? "checked" : ""} />
+        </label>
         <label class="switch-row">
           <span><b>固定最上層</b><small>讓 HUD 保持在其他視窗上方</small></span>
           <input id="always-on-top" type="checkbox" ${s.alwaysOnTop ? "checked" : ""} />
@@ -227,6 +414,42 @@ function renderSettings() {
       </div>
 
       <button class="reset-style-button" id="reset-style">恢復預設值</button>
+    </section>
+  `;
+}
+
+function renderTrendPanel() {
+  const days = getSevenDayUsage();
+  const maxTokens = Math.max(1, ...days.map((day) => day.tokens));
+  const totalTokens = days.reduce((sum, day) => sum + day.tokens, 0);
+  const peak = days.reduce((best, day) => day.tokens > best.tokens ? day : best, days[0] ?? { label: "—", tokens: 0 });
+
+  return `
+    <section class="trend-panel ${state.trendOpen ? "is-open" : ""}" aria-hidden="${!state.trendOpen}">
+      <div class="trend-heading">
+        <div>
+          <h2>近 7 天使用趨勢</h2>
+          <p>每日 Codex Token 使用量</p>
+        </div>
+        <button class="icon-button" id="close-trend" aria-label="關閉趨勢">×</button>
+      </div>
+      <div class="trend-summary">
+        <div><span>7 日總量</span><strong>${formatCompactNumber(totalTokens)}</strong></div>
+        <div><span>最高日</span><strong>${escapeHtml(peak.label)} · ${formatCompactNumber(peak.tokens)}</strong></div>
+      </div>
+      <div class="trend-chart" role="img" aria-label="近七日 Codex Token 使用趨勢">
+        ${days.map((day) => {
+          const height = Math.max(4, Math.round((day.tokens / maxTokens) * 100));
+          return `
+            <div class="trend-day" title="${escapeHtml(day.key)} · ${formatCompactNumber(day.tokens)} Tokens">
+              <span class="trend-value">${formatCompactNumber(day.tokens)}</span>
+              <div class="trend-track"><div class="trend-bar" style="height:${height}%"></div></div>
+              <span class="trend-label">${escapeHtml(day.label)}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      <p class="trend-note">資料來自本機 Codex usage 摘要，不會上傳到第三方。</p>
     </section>
   `;
 }
@@ -253,34 +476,41 @@ function renderResizeHandles() {
   `;
 }
 
-async function openSettings() {
-  try {
-    const physicalSize = await appWindow.innerSize();
-    const scaleFactor = await appWindow.scaleFactor();
-    const logicalSize = physicalSize.toLogical(scaleFactor);
-    state.preSettingsSize = {
-      width: logicalSize.width,
-      height: logicalSize.height
-    };
-
-    await appWindow.setSize(new LogicalSize(
-      Math.max(logicalSize.width, 420),
-      Math.max(logicalSize.height, 420)
-    ));
-  } catch (error) {
-    console.error("無法調整設定視窗大小", error);
+async function openPanel(panel) {
+  if (state.miniMode) {
+    await setMiniMode(false);
   }
 
-  state.settingsOpen = true;
-  render();
+  try {
+    if (!state.prePanelSize) {
+      const logicalSize = await getLogicalInnerSize();
+      state.prePanelSize = { width: logicalSize.width, height: logicalSize.height };
+    }
+
+    state.settingsOpen = panel === "settings";
+    state.trendOpen = panel === "trend";
+    render();
+
+    const logicalSize = await getLogicalInnerSize();
+    const minimum = panel === "settings"
+      ? { width: 420, height: 500 }
+      : { width: 440, height: 380 };
+    await appWindow.setSize(new LogicalSize(
+      Math.max(logicalSize.width, minimum.width),
+      Math.max(logicalSize.height, minimum.height)
+    ));
+  } catch (error) {
+    console.error("無法調整面板視窗大小", error);
+  }
 }
 
-async function closeSettings() {
+async function closePanel() {
   state.settingsOpen = false;
+  state.trendOpen = false;
   render();
 
-  const previousSize = state.preSettingsSize;
-  state.preSettingsSize = null;
+  const previousSize = state.prePanelSize;
+  state.prePanelSize = null;
   if (!previousSize) return;
 
   try {
@@ -288,6 +518,52 @@ async function closeSettings() {
   } catch (error) {
     console.error("無法恢復 HUD 大小", error);
   }
+}
+
+function openSettings() {
+  return openPanel("settings");
+}
+
+function closeSettings() {
+  return closePanel();
+}
+
+function openTrend() {
+  return openPanel("trend");
+}
+
+function closeTrend() {
+  return closePanel();
+}
+
+async function setMiniMode(enabled) {
+  if (enabled === state.miniMode) return;
+
+  try {
+    if (enabled) {
+      const logicalSize = await getLogicalInnerSize();
+      state.preMiniSize = { width: logicalSize.width, height: logicalSize.height };
+      state.miniMode = true;
+      localStorage.setItem(MINI_MODE_KEY, "true");
+      await appWindow.setSizeConstraints(MINI_CONSTRAINTS);
+      await appWindow.setSize(new LogicalSize(MINI_SIZE.width, MINI_SIZE.height));
+    } else {
+      state.miniMode = false;
+      localStorage.setItem(MINI_MODE_KEY, "false");
+      await appWindow.setSizeConstraints(NORMAL_CONSTRAINTS);
+      const restoreSize = state.preMiniSize ?? { width: 420, height: 270 };
+      state.preMiniSize = null;
+      await appWindow.setSize(new LogicalSize(restoreSize.width, restoreSize.height));
+    }
+  } catch (error) {
+    console.error("無法切換超迷你模式", error);
+  }
+
+  render();
+}
+
+function toggleMiniMode() {
+  return setMiniMode(!state.miniMode);
 }
 
 function render() {
@@ -300,7 +576,7 @@ function render() {
 
   root.innerHTML = `
     <main class="hud-shell" data-tauri-drag-region>
-      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""}" data-tauri-drag-region>
+      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""} ${state.trendOpen ? "trend-mode" : ""} ${state.miniMode ? "mini-mode" : ""}" data-tauri-drag-region>
         <header class="topbar" data-tauri-drag-region>
           <div class="brand" data-tauri-drag-region>
             <div class="brand-orb" data-tauri-drag-region aria-hidden="true"></div>
@@ -315,7 +591,9 @@ function render() {
           <div class="top-actions">
             <span class="status-chip risk-${risk}"><i></i><b>${riskLabel(risk)}</b></span>
             <button class="icon-button ${state.loading ? "is-spinning" : ""}" id="refresh" title="立即重新整理" aria-label="立即重新整理">↻</button>
-            <button class="icon-button" id="open-settings" title="設定" aria-label="設定">⚙</button>
+            <button class="icon-button secondary-action" id="open-trend" title="近 7 天使用趨勢" aria-label="近 7 天使用趨勢">▥</button>
+            <button class="icon-button secondary-action" id="open-settings" title="設定" aria-label="設定">⚙</button>
+            <button class="icon-button" id="toggle-mini" title="${state.miniMode ? "離開超迷你模式" : "切換超迷你模式"}" aria-label="切換超迷你模式">▭</button>
             <button class="icon-button" id="hide-window" title="隱藏到系統匣" aria-label="隱藏到系統匣">—</button>
           </div>
         </header>
@@ -355,7 +633,8 @@ function render() {
         </section>
 
         ${renderSettings()}
-        ${state.settingsOpen ? "" : renderResizeHandles()}
+        ${renderTrendPanel()}
+        ${state.settingsOpen || state.trendOpen ? "" : renderResizeHandles()}
       </section>
     </main>
   `;
@@ -368,6 +647,9 @@ function bindEvents() {
   document.querySelector("#retry")?.addEventListener("click", () => refresh(true));
   document.querySelector("#open-settings")?.addEventListener("click", () => openSettings());
   document.querySelector("#close-settings")?.addEventListener("click", () => closeSettings());
+  document.querySelector("#open-trend")?.addEventListener("click", () => openTrend());
+  document.querySelector("#close-trend")?.addEventListener("click", () => closeTrend());
+  document.querySelector("#toggle-mini")?.addEventListener("click", () => toggleMiniMode());
   document.querySelector("#hide-window")?.addEventListener("click", () => appWindow.hide());
 
   document.querySelectorAll("[data-resize-direction]").forEach((handle) => {
@@ -393,11 +675,40 @@ function bindEvents() {
     input.addEventListener("input", (event) => {
       const key = event.target.dataset.settingRange;
       state.settings[key] = Number(event.target.value);
+      if (key === "warningThreshold" && state.settings.warningThreshold <= state.settings.criticalThreshold) {
+        state.settings.criticalThreshold = Math.max(5, state.settings.warningThreshold - 5);
+        const output = document.querySelector("#output-criticalThreshold");
+        const slider = document.querySelector("#setting-criticalThreshold");
+        if (output) output.textContent = `${state.settings.criticalThreshold}%`;
+        if (slider) slider.value = String(state.settings.criticalThreshold);
+      }
+      if (key === "criticalThreshold" && state.settings.criticalThreshold >= state.settings.warningThreshold) {
+        state.settings.warningThreshold = Math.min(40, state.settings.criticalThreshold + 5);
+        const output = document.querySelector("#output-warningThreshold");
+        const slider = document.querySelector("#setting-warningThreshold");
+        if (output) output.textContent = `${state.settings.warningThreshold}%`;
+        if (slider) slider.value = String(state.settings.warningThreshold);
+      }
       const suffix = key === "blur" ? "px" : "%";
       document.querySelector(`#output-${key}`).textContent = `${event.target.value}${suffix}`;
       applySettings();
       saveSettings();
     });
+  });
+  document.querySelector("#notifications-enabled")?.addEventListener("change", async (event) => {
+    const checked = event.target.checked;
+    if (checked) {
+      state.settings.notificationsEnabled = true;
+      state.notificationPermission = null;
+      const granted = await ensureNotificationPermission();
+      if (!granted) {
+        state.settings.notificationsEnabled = false;
+        event.target.checked = false;
+      }
+    } else {
+      state.settings.notificationsEnabled = false;
+    }
+    saveSettings();
   });
   document.querySelector("#always-on-top")?.addEventListener("change", (event) => {
     updateSetting("alwaysOnTop", event.target.checked, false);
@@ -434,7 +745,9 @@ async function refresh(force = false) {
   state.error = null;
   render();
   try {
-    state.snapshot = await invoke("get_usage_snapshot", { force });
+    const snapshot = await invoke("get_usage_snapshot", { force });
+    state.snapshot = snapshot;
+    await processSnapshotAlerts(snapshot);
   } catch (error) {
     state.error = String(error);
   } finally {
@@ -445,6 +758,23 @@ async function refresh(force = false) {
 
 async function initialize() {
   applySettings();
+  await restoreWindowGeometry();
+
+  if (state.miniMode) {
+    try {
+      state.preMiniSize = await getLogicalInnerSize();
+      await appWindow.setSizeConstraints(MINI_CONSTRAINTS);
+      await appWindow.setSize(new LogicalSize(MINI_SIZE.width, MINI_SIZE.height));
+    } catch (error) {
+      console.error("無法恢復超迷你模式", error);
+    }
+  } else {
+    await appWindow.setSizeConstraints(NORMAL_CONSTRAINTS).catch(() => {});
+  }
+
+  await appWindow.onMoved(() => scheduleGeometrySave());
+  await appWindow.onResized(() => scheduleGeometrySave());
+
   try {
     state.settings.autostart = await isEnabled();
     saveSettings();
@@ -452,10 +782,11 @@ async function initialize() {
     // 無法讀取時保留既有設定，避免影響主要額度功能。
   }
 
-  await listen("usage-snapshot-updated", (event) => {
+  await listen("usage-snapshot-updated", async (event) => {
     state.snapshot = event.payload;
     state.error = null;
     state.loading = false;
+    await processSnapshotAlerts(event.payload);
     render();
   });
   await listen("usage-snapshot-error", (event) => {
@@ -468,9 +799,10 @@ async function initialize() {
 
   state.loading = false;
   await refresh(false);
+  scheduleGeometrySave();
 
   state.nowTimer = window.setInterval(() => {
-    if (!state.settingsOpen && state.snapshot) render();
+    if (!state.settingsOpen && !state.trendOpen && state.snapshot) render();
   }, 60_000);
 }
 

@@ -2,7 +2,7 @@
 
 一個輕量、Local First 的 Windows 桌面懸浮工具，用來顯示 ChatGPT Codex 訂閱額度、重置時間、使用速度與預估耗盡時間。
 
-> 目前狀態：`v0.1.4` MVP
+> 目前狀態：`v0.2.0`
 
 ## 功能
 
@@ -15,7 +15,11 @@
 - 判斷「預估耗盡時間是否早於 Reset」，以穩定 / 注意 / 危險顯示。
 - Windows 系統匣常駐，HUD 可隱藏而不退出。
 - 無標題列、可拖曳、可自由縮放、半透明、Always-on-top 的 Compact HUD。
-- 顯示今日 Tokens、Lifetime Tokens 與最後更新時間；視窗過矮時自動收斂隱藏。
+- 記住最後的視窗位置與大小，重新開啟後自動恢復。
+- 一鍵切換超迷你模式，縮成只保留核心 quota 的小型 HUD。
+- 顯示今日 Tokens、Lifetime Tokens 與最後更新時間。
+- 近 7 天 Token 使用趨勢圖，直接讀取本機 Codex usage 摘要。
+- 額度偏低、危險與恢復時可使用 Windows 系統通知。
 - 設定模式使用獨立不透底面板，並暫時放大視窗；關閉後恢復原本 HUD 大小。
 - 移除 Windows Acrylic 與 backdrop blur，避免桌面背景出現霧化區塊。
 - 可調整：
@@ -24,6 +28,8 @@
   - 自訂主色
   - 透明度
   - 視窗大小（四邊與四角拖曳縮放）
+  - 低額度 / 危險提醒門檻
+  - Windows 額度通知
   - 固定最上層
   - 開機自動啟動
 
@@ -123,7 +129,7 @@ npm run tauri dev
 npm run check
 ```
 
-### 建置 Windows 安裝檔
+### 建置 Windows 安裝檔與 Portable 執行檔
 
 ```powershell
 npm run tauri build
@@ -131,11 +137,38 @@ npm run tauri build
 
 預設使用 Tauri NSIS `currentUser` 安裝模式，不要求管理員權限。
 
-輸出通常位於：
+安裝檔通常位於：
 
 ```text
 src-tauri\target\release\bundle\nsis\
 ```
+
+不安裝版本可直接使用：
+
+```text
+src-tauri\target\release\codex-usage-hud.exe
+```
+
+GitHub Actions 會另外整理成 `Codex.Usage.HUD_*_x64-portable.exe` 並一起產生 `SHA256SUMS.txt`。
+
+## GitHub Release / Windows 簽章
+
+推送 `v*` tag 後，GitHub Actions 會自動：
+
+1. 跑 `npm run check`。
+2. 建置 Windows x64 portable EXE。
+3. 建置 NSIS 安裝檔。
+4. 產生 SHA-256 checksum。
+5. 發布 GitHub Release。
+
+如果 repository secrets 有設定下列兩項，Release workflow 會在打包前簽署應用程式 EXE，並在打包後簽署 NSIS 安裝檔：
+
+```text
+WINDOWS_CERTIFICATE_BASE64
+WINDOWS_CERTIFICATE_PASSWORD
+```
+
+`WINDOWS_CERTIFICATE_BASE64` 應為 PFX Code Signing 憑證的 Base64 內容。沒有設定憑證時仍可正常發布，但檔案會是未簽章版本。
 
 ## 技術
 
@@ -158,11 +191,17 @@ src-tauri\target\release\bundle\nsis\
 - [x] 自訂顏色 / 透明度
 - [x] System tray
 - [x] Autostart
-- [ ] Mini 膠囊模式
-- [ ] 7 / 30 日使用趨勢圖
-- [ ] 額度恢復通知
-- [ ] 預估提前耗盡通知
-- [ ] GitHub Release 自動簽章流程
+- [x] 超迷你模式
+- [x] 7 日使用趨勢圖
+- [x] 額度恢復通知
+- [x] 額度偏低 / 危險通知
+- [x] 視窗位置與大小記憶
+- [x] Portable 執行檔
+- [x] GitHub Release 自動 build + SHA-256
+- [x] 可選 Windows Code Signing pipeline
+- [ ] 多帳號 Codex Home 切換與總覽
+- [ ] 多帳號額度 / Reset / ETA 聚合評估
+- [ ] 30 日使用趨勢圖
 
 ## License
 

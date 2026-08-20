@@ -695,6 +695,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let toggle_item = MenuItem::with_id(app, "toggle", "顯示 / 隱藏", true, None::<&str>)?;
             let refresh_item = MenuItem::with_id(app, "refresh", "重新整理", true, None::<&str>)?;

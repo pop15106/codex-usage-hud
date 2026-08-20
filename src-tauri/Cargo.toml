@@ -1,6 +1,6 @@
 [package]
 name = "codex-usage-hud"
-version = "0.1.4"
+version = "0.2.0"
 description = "Lightweight Windows HUD for Codex subscription usage and reset forecasts"
 authors = ["pop15106"]
 edition = "2021"
@@ -19,3 +19,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tauri-plugin-notification = "2"

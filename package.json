@@ -1,7 +1,7 @@
 {
   "name": "codex-usage-hud",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-autostart": "^2.0.0"
+    "@tauri-apps/plugin-autostart": "^2.0.0",
+    "@tauri-apps/plugin-notification": "^2.3.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
