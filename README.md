@@ -3,6 +3,9 @@
 一個輕量、Local First 的 Windows 桌面懸浮工具，用來顯示 ChatGPT Codex 訂閱額度、重置時間、使用速度與預估耗盡時間。
 
 > 目前狀態：`v0.3.2`
+>
+> 📘 **完整使用說明書**：[`docs/USER_GUIDE.zh-TW.md`](docs/USER_GUIDE.zh-TW.md)
+> 內容包含安裝、主畫面、ETA 信心度、多帳號、通知、趨勢、Portable、資安與疑難排解。
 
 ## 功能
 
