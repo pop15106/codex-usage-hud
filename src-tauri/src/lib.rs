@@ -114,6 +114,10 @@ struct WindowSnapshot {
     resets_at: i64,
     burn_rate_per_hour: Option<f64>,
     eta_exhausted_at: Option<i64>,
+    eta_confidence_percent: u8,
+    eta_sample_count: i64,
+    eta_sample_span_mins: i64,
+    eta_usage_delta_percent: f64,
     risk: String,
     rate_limit_reached_type: Option<String>,
 }
@@ -560,6 +564,65 @@ fn open_history_db(app: &AppHandle, profile_id: &str) -> Result<Connection, Stri
     Ok(connection)
 }
 
+fn eta_min_span_seconds(window_duration_mins: i64) -> i64 {
+    if window_duration_mins <= 360 {
+        30 * 60
+    } else if window_duration_mins <= 1440 {
+        60 * 60
+    } else {
+        6 * 60 * 60
+    }
+}
+
+fn calculate_eta_confidence(
+    sample_count: i64,
+    sample_span_seconds: i64,
+    usage_delta_percent: f64,
+    window_duration_mins: i64,
+) -> u8 {
+    let sample_score = (sample_count as f64 / 3.0).clamp(0.0, 1.0);
+    let span_score = (sample_span_seconds as f64
+        / eta_min_span_seconds(window_duration_mins) as f64)
+        .clamp(0.0, 1.0);
+    let delta_score = (usage_delta_percent.max(0.0) / 2.0).clamp(0.0, 1.0);
+    (sample_score.min(span_score).min(delta_score) * 100.0).round() as u8
+}
+
+fn classify_window_risk(
+    remaining_percent: f64,
+    hard_limit_reached: bool,
+    eta_exhausted_at: Option<i64>,
+    resets_at: i64,
+    sampled_at: i64,
+) -> &'static str {
+    if remaining_percent <= 0.01 || hard_limit_reached {
+        return "critical";
+    }
+
+    // 高剩餘額度不應被尚未成熟或偶發的短期消耗速度誤判。
+    if remaining_percent >= 80.0 {
+        return "safe";
+    }
+    if remaining_percent <= 10.0 {
+        return "critical";
+    }
+    if remaining_percent <= 25.0 {
+        return "warning";
+    }
+
+    if let Some(eta) = eta_exhausted_at {
+        if eta < resets_at {
+            let until_exhausted = eta - sampled_at;
+            if until_exhausted <= 3 * 3600 {
+                return "critical";
+            }
+            return "warning";
+        }
+    }
+
+    "safe"
+}
+
 fn analyse_window(
     connection: &Connection,
     sampled_at: i64,
@@ -573,7 +636,26 @@ fn analyse_window(
         24 * 3600
     };
     let oldest_allowed = sampled_at - lookback_seconds;
-    let latest_allowed = sampled_at - 300;
+
+    let historical_sample_count: i64 = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM usage_samples
+            WHERE limit_id = ?1
+              AND window_kind = ?2
+              AND resets_at = ?3
+              AND sampled_at >= ?4
+            ",
+            params![
+                bucket.limit_id,
+                window_kind,
+                window.resets_at,
+                oldest_allowed
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("無法統計額度歷史樣本：{error}"))?;
 
     let previous: Option<(i64, f64)> = connection
         .query_row(
@@ -584,7 +666,6 @@ fn analyse_window(
               AND window_kind = ?2
               AND resets_at = ?3
               AND sampled_at >= ?4
-              AND sampled_at <= ?5
             ORDER BY sampled_at ASC
             LIMIT 1
             ",
@@ -592,53 +673,53 @@ fn analyse_window(
                 bucket.limit_id,
                 window_kind,
                 window.resets_at,
-                oldest_allowed,
-                latest_allowed
+                oldest_allowed
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|error| format!("無法讀取額度歷史：{error}"))?;
 
-    let burn_rate_per_hour = previous.and_then(|(previous_at, previous_used)| {
-        let elapsed_seconds = sampled_at - previous_at;
-        let delta = window.used_percent - previous_used;
-        if elapsed_seconds >= 300 && delta > 0.01 {
-            Some(delta / (elapsed_seconds as f64 / 3600.0))
-        } else {
-            None
-        }
-    });
+    let sample_count = historical_sample_count + 1;
+    let (sample_span_seconds, usage_delta_percent) = previous
+        .map(|(previous_at, previous_used)| {
+            (
+                (sampled_at - previous_at).max(0),
+                (window.used_percent - previous_used).max(0.0),
+            )
+        })
+        .unwrap_or((0, 0.0));
+    let eta_confidence_percent = calculate_eta_confidence(
+        sample_count,
+        sample_span_seconds,
+        usage_delta_percent,
+        window.window_duration_mins,
+    );
+    let eta_ready = eta_confidence_percent >= 100;
+
+    let burn_rate_per_hour = if eta_ready && sample_span_seconds > 0 {
+        Some(usage_delta_percent / (sample_span_seconds as f64 / 3600.0))
+            .filter(|rate| rate.is_finite() && *rate > 0.0)
+    } else {
+        None
+    };
 
     let remaining_percent = (100.0 - window.used_percent).clamp(0.0, 100.0);
     let eta_exhausted_at = burn_rate_per_hour.and_then(|rate| {
-        if rate <= 0.0 || remaining_percent <= 0.0 {
+        if remaining_percent <= 0.0 {
             None
         } else {
             Some(sampled_at + ((remaining_percent / rate) * 3600.0).round() as i64)
         }
     });
 
-    let risk = if remaining_percent <= 0.01 || bucket.rate_limit_reached_type.is_some() {
-        "critical"
-    } else if let Some(eta) = eta_exhausted_at {
-        if eta < window.resets_at {
-            let until_exhausted = eta - sampled_at;
-            if until_exhausted <= 6 * 3600 || remaining_percent < 15.0 {
-                "critical"
-            } else {
-                "warning"
-            }
-        } else if remaining_percent < 15.0 {
-            "warning"
-        } else {
-            "safe"
-        }
-    } else if remaining_percent < 10.0 {
-        "warning"
-    } else {
-        "safe"
-    };
+    let risk = classify_window_risk(
+        remaining_percent,
+        bucket.rate_limit_reached_type.is_some(),
+        eta_exhausted_at,
+        window.resets_at,
+        sampled_at,
+    );
 
     connection
         .execute(
@@ -670,6 +751,10 @@ fn analyse_window(
         resets_at: window.resets_at,
         burn_rate_per_hour,
         eta_exhausted_at,
+        eta_confidence_percent,
+        eta_sample_count: sample_count,
+        eta_sample_span_mins: sample_span_seconds / 60,
+        eta_usage_delta_percent: usage_delta_percent,
         risk: risk.to_string(),
         rate_limit_reached_type: bucket.rate_limit_reached_type.clone(),
     })
@@ -1197,6 +1282,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eta_confidence_requires_samples_time_and_real_usage_delta() {
+        assert_eq!(calculate_eta_confidence(3, 30 * 60, 2.0, 300), 100);
+        assert!(calculate_eta_confidence(2, 30 * 60, 2.0, 300) < 100);
+        assert!(calculate_eta_confidence(3, 10 * 60, 2.0, 300) < 100);
+        assert!(calculate_eta_confidence(3, 30 * 60, 1.0, 300) < 100);
+        assert!(calculate_eta_confidence(3, 2 * 60 * 60, 2.0, 10080) < 100);
+        assert_eq!(calculate_eta_confidence(3, 6 * 60 * 60, 2.0, 10080), 100);
+    }
+
+    #[test]
+    fn high_remaining_quota_stays_safe_without_hard_limit() {
+        let now = 1_000_000;
+        assert_eq!(
+            classify_window_risk(99.0, false, Some(now + 3 * 86400), now + 7 * 86400, now),
+            "safe"
+        );
+        assert_eq!(classify_window_risk(99.0, true, None, now + 7 * 86400, now), "critical");
+        assert_eq!(classify_window_risk(20.0, false, None, now + 86400, now), "warning");
+        assert_eq!(classify_window_risk(9.0, false, None, now + 86400, now), "critical");
+    }
 
     #[test]
     fn app_server_probe_returns_account_and_quota() {

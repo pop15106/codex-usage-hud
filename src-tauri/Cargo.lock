@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "codex-usage-hud"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "rusqlite",

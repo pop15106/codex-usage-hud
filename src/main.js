@@ -155,6 +155,8 @@ async function ensureNotificationPermission() {
 
 function effectiveRisk(item) {
   const remaining = clamp(Number(item?.remainingPercent) || 0, 0, 100);
+  if (item?.rateLimitReachedType) return "critical";
+  if (remaining >= 80) return "safe";
   if (remaining <= state.settings.criticalThreshold) return "critical";
   if (remaining <= state.settings.warningThreshold) return "warning";
   if (item?.risk === "critical" || item?.risk === "warning") return item.risk;
@@ -431,7 +433,10 @@ function renderWindow(item) {
   const risk = effectiveRisk(item);
   const rate = Number(item.burnRatePerHour);
   const hasRate = Number.isFinite(rate) && rate > 0;
-  const eta = item.etaExhaustedAt ? formatCountdown(item.etaExhaustedAt) : "學習中";
+  const etaConfidence = clamp(Number(item.etaConfidencePercent) || 0, 0, 100);
+  const etaReady = etaConfidence >= 100 && Boolean(item.etaExhaustedAt);
+  const eta = etaReady ? formatCountdown(item.etaExhaustedAt) : "學習中";
+  const etaDetails = `ETA 信心 ${Math.round(etaConfidence)}% · 樣本 ${Number(item.etaSampleCount) || 1} · 跨度 ${Number(item.etaSampleSpanMins) || 0} 分 · 消耗差 ${(Number(item.etaUsageDeltaPercent) || 0).toFixed(1)}%`;
   const title = item.limitName || (item.limitId === "codex" ? "Codex" : item.limitId);
 
   return `
@@ -456,9 +461,9 @@ function renderWindow(item) {
         <span>↻ ${escapeHtml(formatCountdown(item.resetsAt))}</span>
         <span title="${escapeHtml(formatClock(item.resetsAt))}">Reset ${escapeHtml(formatClock(item.resetsAt))}</span>
       </div>
-      <div class="quota-insight">
-        <span>${hasRate ? `↘ ${rate.toFixed(1)}% / hr` : "↘ 正在建立消耗基線"}</span>
-        <span class="risk-label">${escapeHtml(riskLabel(risk))}${item.etaExhaustedAt ? ` · ETA ${escapeHtml(eta)}` : ""}</span>
+      <div class="quota-insight" title="${escapeHtml(etaDetails)}">
+        <span>${hasRate ? `↘ ${rate.toFixed(1)}% / hr` : `↘ ETA 信心 ${Math.round(etaConfidence)}%`}</span>
+        <span class="risk-label">${escapeHtml(riskLabel(risk))} · ETA ${escapeHtml(eta)}</span>
       </div>
     </article>
   `;
@@ -949,8 +954,8 @@ function render() {
     : `${selectedProfile?.label ?? "主要帳號"} · Local First`;
 
   root.innerHTML = `
-    <main class="hud-shell" data-tauri-drag-region>
-      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""} ${state.trendOpen ? "trend-mode" : ""} ${state.miniMode ? "mini-mode" : ""} ${state.accountOverview ? "account-overview-mode" : ""}" data-tauri-drag-region>
+    <main class="hud-shell">
+      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""} ${state.trendOpen ? "trend-mode" : ""} ${state.miniMode ? "mini-mode" : ""} ${state.accountOverview ? "account-overview-mode" : ""}">
         <header class="topbar" data-tauri-drag-region>
           <div class="brand" data-tauri-drag-region>
             <div class="brand-orb" data-tauri-drag-region aria-hidden="true"></div>
