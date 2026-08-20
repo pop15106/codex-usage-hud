@@ -35,12 +35,22 @@ const ACCENT_PRESETS = [
 const WINDOW_STATE_KEY = "codex-usage-hud.window-state";
 const ALERT_STATE_KEY = "codex-usage-hud.alert-state";
 const MINI_MODE_KEY = "codex-usage-hud.mini-mode";
+const ACTIVE_PROFILE_KEY = "codex-usage-hud.active-profile";
+const ACCOUNT_VIEW_KEY = "codex-usage-hud.account-overview";
 const NORMAL_CONSTRAINTS = { minWidth: 300, minHeight: 170 };
 const MINI_CONSTRAINTS = { minWidth: 260, minHeight: 108 };
 const MINI_SIZE = { width: 300, height: 118 };
 
 const state = {
   snapshot: null,
+  profiles: [],
+  profileUsages: [],
+  activeProfileId: localStorage.getItem(ACTIVE_PROFILE_KEY) || "default",
+  accountOverview: localStorage.getItem(ACCOUNT_VIEW_KEY) === "true",
+  accountViewInitialized: localStorage.getItem(ACCOUNT_VIEW_KEY) !== null,
+  loginProfileId: null,
+  loginMessage: null,
+  profileActionLoading: false,
   loading: true,
   error: null,
   settingsOpen: false,
@@ -154,14 +164,15 @@ function codexWindowsFrom(snapshot) {
   return (snapshot?.windows ?? []).filter(isCodexWindow);
 }
 
-async function processSnapshotAlerts(snapshot) {
+async function processSnapshotAlerts(snapshot, profileId = "default", profileLabel = "主要帳號") {
   const windows = codexWindowsFrom(snapshot);
   const item = windows.find((entry) => entry.windowKind === "primary") ?? windows[0];
   if (!item) return;
 
   const remaining = clamp(Number(item.remainingPercent) || 0, 0, 100);
   const risk = effectiveRisk(item);
-  const previous = loadStoredJson(ALERT_STATE_KEY);
+  const alertKey = `${ALERT_STATE_KEY}.${profileId}`;
+  const previous = loadStoredJson(alertKey);
   const resetChanged = Boolean(previous && previous.resetsAt !== item.resetsAt);
   const recovered = Boolean(
     previous
@@ -174,17 +185,17 @@ async function processSnapshotAlerts(snapshot) {
   let notification = null;
   if (recovered) {
     notification = {
-      title: "Codex 額度已恢復",
+      title: `${profileLabel} · Codex 額度已恢復`,
       body: `目前剩餘 ${formatPercent(remaining)}，可以繼續使用。`
     };
   } else if (risk === "critical" && previous?.risk !== "critical") {
     notification = {
-      title: "Codex 額度即將耗盡",
+      title: `${profileLabel} · Codex 額度即將耗盡`,
       body: `目前只剩 ${formatPercent(remaining)}，Reset ${formatClock(item.resetsAt)}。`
     };
   } else if (risk === "warning" && previous?.risk === "safe") {
     notification = {
-      title: "Codex 額度偏低",
+      title: `${profileLabel} · Codex 額度偏低`,
       body: `目前剩餘 ${formatPercent(remaining)}，請留意使用速度。`
     };
   }
@@ -193,12 +204,95 @@ async function processSnapshotAlerts(snapshot) {
     sendNotification(notification);
   }
 
-  localStorage.setItem(ALERT_STATE_KEY, JSON.stringify({
+  localStorage.setItem(alertKey, JSON.stringify({
     remaining,
     risk,
     resetsAt: item.resetsAt,
     sampledAt: snapshot.sampledAt
   }));
+}
+
+function profileUsageById(profileId) {
+  return state.profileUsages.find((item) => item.profile?.id === profileId) ?? null;
+}
+
+function profileById(profileId) {
+  return state.profiles.find((profile) => profile.id === profileId)
+    ?? state.profileUsages.find((item) => item.profile?.id === profileId)?.profile
+    ?? null;
+}
+
+function activeProfile() {
+  return profileById(state.activeProfileId) ?? state.profiles[0] ?? null;
+}
+
+function primaryCodexWindow(snapshot) {
+  const windows = codexWindowsFrom(snapshot);
+  return windows.find((item) => item.windowKind === "primary") ?? windows[0] ?? null;
+}
+
+function snapshotRisk(snapshot) {
+  const windows = codexWindowsFrom(snapshot);
+  if (windows.some((item) => effectiveRisk(item) === "critical")) return "critical";
+  if (windows.some((item) => effectiveRisk(item) === "warning")) return "warning";
+  return "safe";
+}
+
+function syncActiveSnapshot() {
+  const usage = profileUsageById(state.activeProfileId);
+  if (usage) {
+    state.snapshot = usage.snapshot ?? null;
+    state.error = usage.error ?? null;
+    return;
+  }
+
+  state.snapshot = null;
+  state.error = null;
+}
+
+function upsertProfileUsage(update) {
+  if (!update?.profile?.id) return;
+  const index = state.profileUsages.findIndex((item) => item.profile?.id === update.profile.id);
+  if (index >= 0) {
+    state.profileUsages[index] = update;
+  } else {
+    state.profileUsages.push(update);
+  }
+
+  const profileIndex = state.profiles.findIndex((profile) => profile.id === update.profile.id);
+  if (profileIndex >= 0) {
+    state.profiles[profileIndex] = update.profile;
+  } else {
+    state.profiles.push(update.profile);
+  }
+
+  syncActiveSnapshot();
+}
+
+function setAccountOverview(enabled) {
+  state.accountOverview = enabled;
+  localStorage.setItem(ACCOUNT_VIEW_KEY, String(enabled));
+  render();
+}
+
+async function selectProfile(profileId) {
+  if (!profileById(profileId)) return;
+  if (state.miniMode) await setMiniMode(false);
+  state.activeProfileId = profileId;
+  localStorage.setItem(ACTIVE_PROFILE_KEY, profileId);
+  state.accountOverview = false;
+  localStorage.setItem(ACCOUNT_VIEW_KEY, "false");
+  syncActiveSnapshot();
+  render();
+}
+
+async function showAccountOverview() {
+  if (state.miniMode) await setMiniMode(false);
+  state.settingsOpen = false;
+  state.trendOpen = false;
+  state.accountOverview = true;
+  localStorage.setItem(ACCOUNT_VIEW_KEY, "true");
+  render();
 }
 
 function localDateKey(date) {
@@ -322,6 +416,15 @@ function overallRisk() {
   return "safe";
 }
 
+function allAccountsRisk() {
+  const risks = state.profileUsages
+    .filter((item) => item.snapshot)
+    .map((item) => snapshotRisk(item.snapshot));
+  if (risks.includes("critical")) return "critical";
+  if (risks.includes("warning")) return "warning";
+  return "safe";
+}
+
 function renderWindow(item) {
   const remaining = clamp(Number(item.remainingPercent) || 0, 0, 100);
   const risk = effectiveRisk(item);
@@ -357,6 +460,109 @@ function renderWindow(item) {
         <span class="risk-label">${escapeHtml(riskLabel(risk))}${item.etaExhaustedAt ? ` · ETA ${escapeHtml(eta)}` : ""}</span>
       </div>
     </article>
+  `;
+}
+
+function renderAccountOverview() {
+  const entries = state.profiles.map((profile) => {
+    const usage = profileUsageById(profile.id);
+    return { profile, usage, snapshot: usage?.snapshot ?? null, error: usage?.error ?? null };
+  });
+  const validEntries = entries.filter((entry) => entry.snapshot);
+  const totalToday = validEntries.reduce(
+    (sum, entry) => sum + (Number(entry.snapshot?.tokenUsage?.todayTokens) || 0),
+    0
+  );
+  const severity = { safe: 0, warning: 1, critical: 2 };
+  const worst = validEntries.reduce((best, entry) => {
+    if (!best) return entry;
+    return severity[snapshotRisk(entry.snapshot)] > severity[snapshotRisk(best.snapshot)] ? entry : best;
+  }, null);
+  const fastestReset = validEntries
+    .map((entry) => ({ entry, window: primaryCodexWindow(entry.snapshot) }))
+    .filter((item) => item.window?.resetsAt)
+    .sort((left, right) => left.window.resetsAt - right.window.resetsAt)[0] ?? null;
+
+  return `
+    <div class="account-overview">
+      <div class="account-summary-grid">
+        <div class="account-summary-card">
+          <span>今日總 Tokens</span>
+          <strong>${formatCompactNumber(totalToday)}</strong>
+        </div>
+        <div class="account-summary-card">
+          <span>風險最高</span>
+          <strong>${worst ? `${escapeHtml(worst.profile.label)} · ${escapeHtml(riskLabel(snapshotRisk(worst.snapshot)))}` : "—"}</strong>
+        </div>
+        <div class="account-summary-card">
+          <span>最快 Reset</span>
+          <strong>${fastestReset ? `${escapeHtml(fastestReset.entry.profile.label)} · ${escapeHtml(formatCountdown(fastestReset.window.resetsAt))}` : "—"}</strong>
+        </div>
+      </div>
+
+      <div class="account-list">
+        ${entries.map(({ profile, snapshot, error }) => {
+          const windows = codexWindowsFrom(snapshot);
+          const primary = primaryCodexWindow(snapshot);
+          const requiresLogin = Boolean(snapshot?.account?.requiresOpenaiAuth) || (!primary && !snapshot);
+          const risk = snapshot ? snapshotRisk(snapshot) : "safe";
+          const remaining = primary ? formatPercent(primary.remainingPercent) : "—";
+          const email = snapshot?.account?.email;
+          const planType = snapshot?.account?.planType;
+          const windowSummary = windows.length
+            ? windows.map((item) => `${formatWindow(item.windowDurationMins)} ${formatPercent(item.remainingPercent)}`).join(" · ")
+            : "尚無額度視窗";
+          const statusText = error
+            ? "讀取失敗"
+            : requiresLogin
+              ? "尚未登入"
+              : primary
+                ? `${riskLabel(risk)} · Reset ${formatCountdown(primary.resetsAt)}`
+                : "等待額度資料";
+          return `
+            <div class="account-row ${state.activeProfileId === profile.id ? "is-active" : ""} ${error || requiresLogin ? "needs-login" : `risk-${risk}`}" data-select-profile="${escapeHtml(profile.id)}" tabindex="0" role="button">
+              <div class="account-row-main">
+                <div class="account-identity">
+                  <span class="account-dot"></span>
+                  <div>
+                    <div class="account-name-line">
+                      <strong>${escapeHtml(profile.label)}</strong>
+                      ${planType ? `<span class="account-plan-badge">${escapeHtml(planType)}</span>` : ""}
+                    </div>
+                    <small>${email ? escapeHtml(email) : (profile.isDefault ? "目前 Codex CLI 帳號" : "獨立 Codex 帳號")}</small>
+                  </div>
+                </div>
+                <div class="account-quota">
+                  <strong>${remaining}</strong>
+                  <span>${escapeHtml(statusText)}</span>
+                </div>
+              </div>
+              <div class="account-row-meta">
+                <span>${escapeHtml(windowSummary)}</span>
+                <span>今日 ${formatCompactNumber(snapshot?.tokenUsage?.todayTokens)}</span>
+                <span>${primary?.etaExhaustedAt ? `ETA ${escapeHtml(formatCountdown(primary.etaExhaustedAt))}` : "ETA 學習中"}</span>
+                <div class="account-row-actions">
+                  ${!profile.isDefault && (requiresLogin || error) ? `<button class="account-action" data-login-profile="${escapeHtml(profile.id)}" ${state.profileActionLoading ? "disabled" : ""}>登入</button>` : ""}
+                  ${!profile.isDefault ? `<button class="account-action danger" data-delete-profile="${escapeHtml(profile.id)}" ${state.profileActionLoading ? "disabled" : ""}>刪除</button>` : ""}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+
+      <div class="account-add-section">
+        <div>
+          <strong>新增 Codex 帳號</strong>
+          <small>每個帳號使用獨立 CODEX_HOME，登入憑證仍由 Codex CLI 管理。</small>
+        </div>
+        <div class="account-add-row">
+          <input id="new-profile-label" maxlength="40" placeholder="例如：備用帳號" ${state.profileActionLoading ? "disabled" : ""} />
+          <button id="add-profile" ${state.profileActionLoading ? "disabled" : ""}>＋ 新增帳號</button>
+        </div>
+        ${state.loginMessage ? `<div class="account-login-banner">${escapeHtml(state.loginMessage)}</div>` : ""}
+      </div>
+    </div>
   `;
 }
 
@@ -476,6 +682,109 @@ function renderResizeHandles() {
   `;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitForProfileLogin(profile) {
+  state.loginProfileId = profile.id;
+  state.loginMessage = `已開啟 ${profile.label} 的 Codex 官方登入，等待登入完成…`;
+  render();
+
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    await delay(2000);
+    try {
+      const loggedIn = await invoke("codex_profile_login_status", { profileId: profile.id });
+      if (loggedIn) {
+        state.loginMessage = `${profile.label} 登入完成，正在讀取額度…`;
+        render();
+        await refresh(true);
+        state.loginProfileId = null;
+        state.loginMessage = null;
+        state.profileActionLoading = false;
+        await selectProfile(profile.id);
+        return;
+      }
+    } catch (error) {
+      console.error("檢查 Codex 帳號登入狀態失敗", error);
+    }
+  }
+
+  state.loginProfileId = null;
+  state.profileActionLoading = false;
+  state.loginMessage = `${profile.label} 尚未完成登入，可稍後按「登入」重試。`;
+  render();
+}
+
+async function startProfileLogin(profileId) {
+  const profile = profileById(profileId);
+  if (!profile || profile.isDefault || state.loginProfileId) return;
+
+  state.profileActionLoading = true;
+  state.loginProfileId = profile.id;
+  state.loginMessage = `正在啟動 ${profile.label} 的 Codex 官方登入…`;
+  render();
+
+  try {
+    await invoke("start_codex_profile_login", { profileId: profile.id });
+    await waitForProfileLogin(profile);
+  } catch (error) {
+    state.profileActionLoading = false;
+    state.loginProfileId = null;
+    state.loginMessage = `無法啟動 ${profile.label} 登入：${String(error)}`;
+    render();
+  }
+}
+
+async function addProfile() {
+  if (state.profileActionLoading || state.loginProfileId) return;
+  const input = document.querySelector("#new-profile-label");
+  const label = input?.value?.trim() ?? "";
+
+  state.profileActionLoading = true;
+  state.loginMessage = "正在建立獨立 Codex 帳號環境…";
+  render();
+
+  try {
+    const profile = await invoke("create_codex_profile", { label });
+    state.profiles.push(profile);
+    state.profileUsages.push({ profile, snapshot: null, error: null });
+    render();
+    await invoke("start_codex_profile_login", { profileId: profile.id });
+    await waitForProfileLogin(profile);
+  } catch (error) {
+    state.profileActionLoading = false;
+    state.loginProfileId = null;
+    state.loginMessage = `新增帳號失敗：${String(error)}`;
+    render();
+  }
+}
+
+async function deleteProfile(profileId) {
+  const profile = profileById(profileId);
+  if (!profile || profile.isDefault) return;
+  if (!window.confirm(`確定刪除「${profile.label}」？\n只會刪除 HUD 建立的獨立 CODEX_HOME 與該帳號的本機歷史。`)) return;
+
+  state.profileActionLoading = true;
+  render();
+  try {
+    await invoke("delete_codex_profile", { profileId });
+    state.profiles = state.profiles.filter((item) => item.id !== profileId);
+    state.profileUsages = state.profileUsages.filter((item) => item.profile?.id !== profileId);
+    if (state.activeProfileId === profileId) {
+      state.activeProfileId = "default";
+      localStorage.setItem(ACTIVE_PROFILE_KEY, "default");
+    }
+    syncActiveSnapshot();
+    state.loginMessage = `${profile.label} 已刪除。`;
+  } catch (error) {
+    state.loginMessage = `刪除帳號失敗：${String(error)}`;
+  } finally {
+    state.profileActionLoading = false;
+    render();
+  }
+}
+
 async function openPanel(panel) {
   if (state.miniMode) {
     await setMiniMode(false);
@@ -568,38 +877,44 @@ function toggleMiniMode() {
 
 function render() {
   const root = document.querySelector("#app");
-  const risk = overallRisk();
+  const risk = state.accountOverview ? allAccountsRisk() : overallRisk();
   const snapshot = state.snapshot;
   const account = snapshot?.account;
+  const selectedProfile = activeProfile();
   const windows = visibleWindows();
   const todayTokens = snapshot?.tokenUsage?.todayTokens;
+  const brandTitle = state.accountOverview ? "Codex 帳號" : "Codex";
+  const brandSubtitle = state.accountOverview
+    ? `${state.profiles.length || 1} 個帳號 · Local First`
+    : `${selectedProfile?.label ?? "主要帳號"} · Local First`;
 
   root.innerHTML = `
     <main class="hud-shell" data-tauri-drag-region>
-      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""} ${state.trendOpen ? "trend-mode" : ""} ${state.miniMode ? "mini-mode" : ""}" data-tauri-drag-region>
+      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""} ${state.trendOpen ? "trend-mode" : ""} ${state.miniMode ? "mini-mode" : ""} ${state.accountOverview ? "account-overview-mode" : ""}" data-tauri-drag-region>
         <header class="topbar" data-tauri-drag-region>
           <div class="brand" data-tauri-drag-region>
             <div class="brand-orb" data-tauri-drag-region aria-hidden="true"></div>
             <div data-tauri-drag-region>
               <div class="brand-line" data-tauri-drag-region>
-                <h1 data-tauri-drag-region>Codex</h1>
-                ${account?.planType ? `<span class="plan-badge">${escapeHtml(account.planType)}</span>` : ""}
+                <h1 data-tauri-drag-region>${escapeHtml(brandTitle)}</h1>
+                ${!state.accountOverview && account?.planType ? `<span class="plan-badge">${escapeHtml(account.planType)}</span>` : ""}
               </div>
-              <p data-tauri-drag-region>Usage HUD · Local First</p>
+              <p data-tauri-drag-region>${escapeHtml(brandSubtitle)}</p>
             </div>
           </div>
           <div class="top-actions">
             <span class="status-chip risk-${risk}"><i></i><b>${riskLabel(risk)}</b></span>
-            <button class="icon-button ${state.loading ? "is-spinning" : ""}" id="refresh" title="立即重新整理" aria-label="立即重新整理">↻</button>
-            <button class="icon-button secondary-action" id="open-trend" title="近 7 天使用趨勢" aria-label="近 7 天使用趨勢">▥</button>
+            <button class="icon-button ${state.loading ? "is-spinning" : ""}" id="refresh" title="立即重新整理全部帳號" aria-label="立即重新整理全部帳號">↻</button>
+            <button class="icon-button ${state.accountOverview ? "is-active" : ""}" id="show-accounts" title="帳號總覽" aria-label="帳號總覽">◎</button>
+            ${state.accountOverview ? "" : `<button class="icon-button secondary-action" id="open-trend" title="近 7 天使用趨勢" aria-label="近 7 天使用趨勢">▥</button>`}
             <button class="icon-button secondary-action" id="open-settings" title="設定" aria-label="設定">⚙</button>
-            <button class="icon-button" id="toggle-mini" title="${state.miniMode ? "離開超迷你模式" : "切換超迷你模式"}" aria-label="切換超迷你模式">▭</button>
+            ${state.accountOverview ? "" : `<button class="icon-button" id="toggle-mini" title="${state.miniMode ? "離開超迷你模式" : "切換超迷你模式"}" aria-label="切換超迷你模式">▭</button>`}
             <button class="icon-button" id="hide-window" title="隱藏到系統匣" aria-label="隱藏到系統匣">—</button>
           </div>
         </header>
 
         <section class="content-area">
-          ${state.error ? `
+          ${state.accountOverview ? renderAccountOverview() : state.error ? `
             <div class="error-state">
               <div class="error-icon">!</div>
               <h2>無法讀取 Codex 額度</h2>
@@ -645,6 +960,36 @@ function render() {
 function bindEvents() {
   document.querySelector("#refresh")?.addEventListener("click", () => refresh(true));
   document.querySelector("#retry")?.addEventListener("click", () => refresh(true));
+  document.querySelector("#show-accounts")?.addEventListener("click", () => showAccountOverview());
+  document.querySelector("#add-profile")?.addEventListener("click", () => addProfile());
+  document.querySelector("#new-profile-label")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addProfile();
+  });
+  document.querySelectorAll("[data-select-profile]").forEach((row) => {
+    const select = () => selectProfile(row.dataset.selectProfile);
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      select();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        select();
+      }
+    });
+  });
+  document.querySelectorAll("[data-login-profile]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      startProfileLogin(button.dataset.loginProfile);
+    });
+  });
+  document.querySelectorAll("[data-delete-profile]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteProfile(button.dataset.deleteProfile);
+    });
+  });
   document.querySelector("#open-settings")?.addEventListener("click", () => openSettings());
   document.querySelector("#close-settings")?.addEventListener("click", () => closeSettings());
   document.querySelector("#open-trend")?.addEventListener("click", () => openTrend());
@@ -740,16 +1085,29 @@ function updateSetting(key, value, rerender = true) {
 }
 
 async function refresh(force = false) {
-  if (state.loading && !state.error && !force) return;
+  if (state.loading && state.profileUsages.length && !force) return;
   state.loading = true;
-  state.error = null;
+  if (!state.accountOverview) state.error = null;
   render();
   try {
-    const snapshot = await invoke("get_usage_snapshot", { force });
-    state.snapshot = snapshot;
-    await processSnapshotAlerts(snapshot);
+    const usages = await invoke("get_all_usage_snapshots", { force });
+    state.profileUsages = usages;
+    state.profiles = usages.map((item) => item.profile);
+
+    if (!state.profiles.some((profile) => profile.id === state.activeProfileId)) {
+      state.activeProfileId = state.profiles[0]?.id ?? "default";
+      localStorage.setItem(ACTIVE_PROFILE_KEY, state.activeProfileId);
+    }
+    syncActiveSnapshot();
+
+    for (const usage of usages) {
+      if (usage.snapshot) {
+        await processSnapshotAlerts(usage.snapshot, usage.profile.id, usage.profile.label);
+      }
+    }
   } catch (error) {
-    state.error = String(error);
+    if (!state.accountOverview) state.error = String(error);
+    console.error("無法讀取多帳號額度", error);
   } finally {
     state.loading = false;
     render();
@@ -758,6 +1116,27 @@ async function refresh(force = false) {
 
 async function initialize() {
   applySettings();
+
+  try {
+    state.profiles = await invoke("list_codex_profiles");
+  } catch (error) {
+    console.error("無法讀取 Codex 帳號清單", error);
+    state.profiles = [{ id: "default", label: "主要帳號", isDefault: true, codexHome: null }];
+  }
+
+  if (!state.profiles.some((profile) => profile.id === state.activeProfileId)) {
+    state.activeProfileId = state.profiles[0]?.id ?? "default";
+    localStorage.setItem(ACTIVE_PROFILE_KEY, state.activeProfileId);
+  }
+  if (!state.accountViewInitialized && state.profiles.length > 1) {
+    state.accountOverview = true;
+    localStorage.setItem(ACCOUNT_VIEW_KEY, "true");
+  }
+  if (state.accountOverview && state.miniMode) {
+    state.miniMode = false;
+    localStorage.setItem(MINI_MODE_KEY, "false");
+  }
+
   await restoreWindowGeometry();
 
   if (state.miniMode) {
@@ -782,19 +1161,22 @@ async function initialize() {
     // 無法讀取時保留既有設定，避免影響主要額度功能。
   }
 
-  await listen("usage-snapshot-updated", async (event) => {
-    state.snapshot = event.payload;
-    state.error = null;
+  await listen("profile-usage-snapshot-updated", async (event) => {
+    upsertProfileUsage(event.payload);
     state.loading = false;
-    await processSnapshotAlerts(event.payload);
+    if (event.payload?.snapshot) {
+      await processSnapshotAlerts(
+        event.payload.snapshot,
+        event.payload.profile.id,
+        event.payload.profile.label
+      );
+    }
     render();
   });
-  await listen("usage-snapshot-error", (event) => {
-    if (!state.snapshot) {
-      state.error = String(event.payload);
-      state.loading = false;
-      render();
-    }
+  await listen("profile-usage-snapshot-error", (event) => {
+    upsertProfileUsage(event.payload);
+    state.loading = false;
+    render();
   });
 
   state.loading = false;
@@ -802,7 +1184,7 @@ async function initialize() {
   scheduleGeometrySave();
 
   state.nowTimer = window.setInterval(() => {
-    if (!state.settingsOpen && !state.trendOpen && state.snapshot) render();
+    if (!state.settingsOpen && !state.trendOpen && state.profileUsages.length) render();
   }, 60_000);
 }
 

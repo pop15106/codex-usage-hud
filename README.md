@@ -2,7 +2,7 @@
 
 一個輕量、Local First 的 Windows 桌面懸浮工具，用來顯示 ChatGPT Codex 訂閱額度、重置時間、使用速度與預估耗盡時間。
 
-> 目前狀態：`v0.2.0`
+> 目前狀態：`v0.3.0`
 
 ## 功能
 
@@ -18,7 +18,12 @@
 - 記住最後的視窗位置與大小，重新開啟後自動恢復。
 - 一鍵切換超迷你模式，縮成只保留核心 quota 的小型 HUD。
 - 顯示今日 Tokens、Lifetime Tokens 與最後更新時間。
-- 近 7 天 Token 使用趨勢圖，直接讀取本機 Codex usage 摘要。
+- 支援多帳號 Codex Home：每個額外帳號使用獨立 `CODEX_HOME` 與獨立歷史資料庫。
+- 帳號總覽同時顯示各帳號的方案類型、Codex window 額度、Reset、ETA、風險與今日 Tokens。
+- 外層總覽提供全部帳號今日 Tokens 總量、最高風險帳號與最快 Reset；點進帳號後才顯示該帳號的三格摘要與詳細 quota。
+- 新增帳號時由 HUD 啟動官方 `codex login`，登入憑證仍由 Codex CLI 自己保存，HUD 不複製 token。
+- 點擊帳號列會一鍵切換 HUD 的監看帳號；不會修改其他獨立 Codex CLI / VS Code 行程的 `CODEX_HOME` 或登入狀態。
+- 近 7 天 Token 使用趨勢圖，直接讀取目前選取帳號的本機 Codex usage 摘要。
 - 額度偏低、危險與恢復時可使用 Windows 系統通知。
 - 設定模式使用獨立不透底面板，並暫時放大視窗；關閉後恢復原本 HUD 大小。
 - 移除 Windows Acrylic 與 backdrop blur，避免桌面背景出現霧化區塊。
@@ -49,7 +54,7 @@
 
 ## 使用需求
 
-目前 MVP 需要：
+目前需要：
 
 1. Windows 10 / 11。
 2. 已安裝 Codex CLI。
@@ -70,15 +75,23 @@ Codex Usage HUD 採 Local First 設計：
 
 - 不建立額外雲端帳號。
 - 不上傳使用量歷史到第三方伺服器。
-- 額度採樣存放在本機 SQLite。
+- 額外 Codex 帳號以獨立 `CODEX_HOME` 保存，由 Codex CLI 管理登入憑證。
+- HUD 不讀取、複製或匯出 Codex access token。
+- 每個帳號的額度採樣存放在獨立本機 SQLite，避免 Burn Rate / ETA 跨帳號混算。
 - UI 偏好存放在本機 WebView storage。
 - 不讀取瀏覽器 Cookie。
 - 不爬 ChatGPT 網頁。
 
-SQLite 資料庫位於 Tauri 的應用程式資料目錄，檔名為：
+SQLite 資料庫位於 Tauri 的應用程式資料目錄。主要帳號使用：
 
 ```text
 usage-history.db
+```
+
+額外帳號則使用獨立檔案，例如：
+
+```text
+usage-history-account-xxxxxxxx.db
 ```
 
 ## Burn Rate / ETA
@@ -199,8 +212,8 @@ WINDOWS_CERTIFICATE_PASSWORD
 - [x] Portable 執行檔
 - [x] GitHub Release 自動 build + SHA-256
 - [x] 可選 Windows Code Signing pipeline
-- [ ] 多帳號 Codex Home 切換與總覽
-- [ ] 多帳號額度 / Reset / ETA 聚合評估
+- [x] 多帳號 Codex Home 切換與總覽
+- [x] 多帳號額度 / Reset / ETA 聚合評估
 - [ ] 30 日使用趨勢圖
 
 ## License

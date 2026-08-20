@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -139,10 +140,27 @@ struct UsageSnapshot {
     source: &'static str,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CodexProfile {
+    id: String,
+    label: String,
+    codex_home: Option<String>,
+    is_default: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProfileUsageSnapshot {
+    profile: CodexProfile,
+    snapshot: Option<UsageSnapshot>,
+    error: Option<String>,
+}
+
 #[derive(Default)]
 struct MonitorState {
-    latest: Mutex<Option<UsageSnapshot>>,
-    last_error: Mutex<Option<String>>,
+    latest: Mutex<HashMap<String, UsageSnapshot>>,
+    last_error: Mutex<HashMap<String, String>>,
     probe_lock: Mutex<()>,
 }
 
@@ -151,6 +169,91 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("無法取得應用程式資料目錄：{error}"))?;
+    fs::create_dir_all(&data_dir).map_err(|error| format!("無法建立資料目錄：{error}"))?;
+    Ok(data_dir)
+}
+
+fn default_profile() -> CodexProfile {
+    CodexProfile {
+        id: "default".to_string(),
+        label: "主要帳號".to_string(),
+        codex_home: None,
+        is_default: true,
+    }
+}
+
+fn custom_profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("codex-profiles.json"))
+}
+
+fn load_custom_profiles(app: &AppHandle) -> Result<Vec<CodexProfile>, String> {
+    let path = custom_profiles_path(app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("無法讀取 Codex 帳號設定：{error}"))?;
+    serde_json::from_str(&raw).map_err(|error| format!("無法解析 Codex 帳號設定：{error}"))
+}
+
+fn save_custom_profiles(app: &AppHandle, profiles: &[CodexProfile]) -> Result<(), String> {
+    let path = custom_profiles_path(app)?;
+    let content = serde_json::to_string_pretty(profiles)
+        .map_err(|error| format!("無法序列化 Codex 帳號設定：{error}"))?;
+    fs::write(path, content).map_err(|error| format!("無法保存 Codex 帳號設定：{error}"))
+}
+
+fn load_profiles(app: &AppHandle) -> Result<Vec<CodexProfile>, String> {
+    let mut profiles = vec![default_profile()];
+    profiles.extend(load_custom_profiles(app)?);
+    Ok(profiles)
+}
+
+fn find_profile(app: &AppHandle, profile_id: &str) -> Result<CodexProfile, String> {
+    load_profiles(app)?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| format!("找不到 Codex 帳號：{profile_id}"))
+}
+
+fn profile_history_name(profile_id: &str) -> String {
+    if profile_id == "default" {
+        return "usage-history.db".to_string();
+    }
+
+    let safe = profile_id
+        .chars()
+        .map(|value| {
+            if value.is_ascii_alphanumeric() || value == '-' || value == '_' {
+                value
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("usage-history-{safe}.db")
+}
+
+fn new_profile_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("account-{millis}")
+}
+
+fn apply_profile_env(command: &mut Command, profile: &CodexProfile) {
+    if let Some(codex_home) = profile.codex_home.as_deref() {
+        command.env("CODEX_HOME", codex_home);
+    }
 }
 
 fn quiet_command(program: &str) -> Command {
@@ -214,7 +317,7 @@ fn terminate_process_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn spawn_app_server() -> Result<Child, String> {
+fn spawn_app_server(profile: &CodexProfile) -> Result<Child, String> {
     #[cfg(windows)]
     let mut command = {
         let mut command = quiet_command("cmd.exe");
@@ -229,6 +332,8 @@ fn spawn_app_server() -> Result<Child, String> {
         command
     };
 
+    apply_profile_env(&mut command, profile);
+
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -241,8 +346,8 @@ fn spawn_app_server() -> Result<Child, String> {
         })
 }
 
-fn probe_codex() -> Result<RawProbe, String> {
-    let mut child = spawn_app_server()?;
+fn probe_codex(profile: &CodexProfile) -> Result<RawProbe, String> {
+    let mut child = spawn_app_server(profile)?;
     let result = (|| {
         let mut stdin = child
             .stdin
@@ -354,14 +459,9 @@ fn probe_codex() -> Result<RawProbe, String> {
     result
 }
 
-fn open_history_db(app: &AppHandle) -> Result<Connection, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("無法取得應用程式資料目錄：{error}"))?;
-    fs::create_dir_all(&data_dir).map_err(|error| format!("無法建立資料目錄：{error}"))?;
-
-    let connection = Connection::open(data_dir.join("usage-history.db"))
+fn open_history_db(app: &AppHandle, profile_id: &str) -> Result<Connection, String> {
+    let data_dir = app_data_dir(app)?;
+    let connection = Connection::open(data_dir.join(profile_history_name(profile_id)))
         .map_err(|error| format!("無法開啟本機使用量資料庫：{error}"))?;
 
     connection
@@ -501,10 +601,10 @@ fn analyse_window(
     })
 }
 
-fn collect_snapshot(app: &AppHandle) -> Result<UsageSnapshot, String> {
-    let probe = probe_codex()?;
+fn collect_snapshot(app: &AppHandle, profile: &CodexProfile) -> Result<UsageSnapshot, String> {
+    let probe = probe_codex(profile)?;
     let sampled_at = unix_now();
-    let connection = open_history_db(app)?;
+    let connection = open_history_db(app, &profile.id)?;
 
     let mut buckets = if let Some(map) = probe.rate_limits.rate_limits_by_limit_id.clone() {
         if map.is_empty() {
@@ -605,6 +705,7 @@ fn collect_snapshot(app: &AppHandle) -> Result<UsageSnapshot, String> {
 fn refresh_and_cache(
     app: &AppHandle,
     state: &Arc<MonitorState>,
+    profile: &CodexProfile,
     force: bool,
 ) -> Result<UsageSnapshot, String> {
     let _guard = state
@@ -614,7 +715,7 @@ fn refresh_and_cache(
 
     if !force {
         if let Ok(latest) = state.latest.lock() {
-            if let Some(snapshot) = latest.as_ref() {
+            if let Some(snapshot) = latest.get(&profile.id) {
                 if unix_now() - snapshot.sampled_at < 60 {
                     return Ok(snapshot.clone());
                 }
@@ -622,39 +723,224 @@ fn refresh_and_cache(
         }
     }
 
-    match collect_snapshot(app) {
+    match collect_snapshot(app, profile) {
         Ok(snapshot) => {
             if let Ok(mut latest) = state.latest.lock() {
-                *latest = Some(snapshot.clone());
+                latest.insert(profile.id.clone(), snapshot.clone());
             }
             if let Ok(mut last_error) = state.last_error.lock() {
-                *last_error = None;
+                last_error.remove(&profile.id);
             }
-            let _ = app.emit("usage-snapshot-updated", snapshot.clone());
+            let update = ProfileUsageSnapshot {
+                profile: profile.clone(),
+                snapshot: Some(snapshot.clone()),
+                error: None,
+            };
+            let _ = app.emit("profile-usage-snapshot-updated", update);
             Ok(snapshot)
         }
         Err(error) => {
             if let Ok(mut last_error) = state.last_error.lock() {
-                *last_error = Some(error.clone());
+                last_error.insert(profile.id.clone(), error.clone());
             }
-            let _ = app.emit("usage-snapshot-error", error.clone());
+            let update = ProfileUsageSnapshot {
+                profile: profile.clone(),
+                snapshot: None,
+                error: Some(error.clone()),
+            };
+            let _ = app.emit("profile-usage-snapshot-error", update);
             Err(error)
         }
     }
+}
+
+fn profile_usage_snapshot(
+    app: &AppHandle,
+    state: &Arc<MonitorState>,
+    profile: CodexProfile,
+    force: bool,
+) -> ProfileUsageSnapshot {
+    match refresh_and_cache(app, state, &profile, force) {
+        Ok(snapshot) => ProfileUsageSnapshot {
+            profile,
+            snapshot: Some(snapshot),
+            error: None,
+        },
+        Err(error) => ProfileUsageSnapshot {
+            profile,
+            snapshot: None,
+            error: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+fn list_codex_profiles(app: AppHandle) -> Result<Vec<CodexProfile>, String> {
+    load_profiles(&app)
+}
+
+#[tauri::command]
+fn create_codex_profile(app: AppHandle, label: String) -> Result<CodexProfile, String> {
+    let mut profiles = load_custom_profiles(&app)?;
+    let id = new_profile_id();
+    let home = app_data_dir(&app)?.join("codex-homes").join(&id);
+    fs::create_dir_all(&home).map_err(|error| format!("無法建立 Codex 帳號目錄：{error}"))?;
+
+    let fallback_label = format!("帳號 {}", profiles.len() + 2);
+    let normalized_label = label.trim();
+    let profile = CodexProfile {
+        id,
+        label: if normalized_label.is_empty() {
+            fallback_label
+        } else {
+            normalized_label.chars().take(40).collect()
+        },
+        codex_home: Some(home.to_string_lossy().to_string()),
+        is_default: false,
+    };
+    profiles.push(profile.clone());
+    save_custom_profiles(&app, &profiles)?;
+    Ok(profile)
+}
+
+#[tauri::command]
+fn start_codex_profile_login(app: AppHandle, profile_id: String) -> Result<(), String> {
+    let profile = find_profile(&app, &profile_id)?;
+    if profile.is_default {
+        return Err("主要帳號請使用既有 Codex CLI 登入；額外帳號才需要從 HUD 建立。".to_string());
+    }
+
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = quiet_command("cmd.exe");
+        command.args(["/D", "/S", "/C", "codex login"]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = quiet_command("codex");
+        command.arg("login");
+        command
+    };
+
+    apply_profile_env(&mut command, &profile);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("無法啟動 Codex 登入：{error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn codex_profile_login_status(app: AppHandle, profile_id: String) -> Result<bool, String> {
+    let profile = find_profile(&app, &profile_id)?;
+
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = quiet_command("cmd.exe");
+        command.args(["/D", "/S", "/C", "codex login status"]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = quiet_command("codex");
+        command.args(["login", "status"]);
+        command
+    };
+
+    apply_profile_env(&mut command, &profile);
+    let output = command
+        .output()
+        .map_err(|error| format!("無法檢查 Codex 登入狀態：{error}"))?;
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(text.contains("Logged in"))
+}
+
+#[tauri::command]
+fn delete_codex_profile(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    profile_id: String,
+) -> Result<(), String> {
+    if profile_id == "default" {
+        return Err("主要帳號不可從 HUD 刪除。".to_string());
+    }
+
+    let mut profiles = load_custom_profiles(&app)?;
+    let profile = profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .cloned()
+        .ok_or_else(|| "找不到要刪除的 Codex 帳號。".to_string())?;
+    profiles.retain(|item| item.id != profile_id);
+    save_custom_profiles(&app, &profiles)?;
+
+    if let Some(home) = profile.codex_home {
+        let homes_root = app_data_dir(&app)?.join("codex-homes");
+        let home_path = PathBuf::from(home);
+        if home_path.exists() && homes_root.exists() {
+            let canonical_root = fs::canonicalize(&homes_root)
+                .map_err(|error| format!("無法驗證 Codex 帳號根目錄：{error}"))?;
+            let canonical_home = fs::canonicalize(&home_path)
+                .map_err(|error| format!("無法驗證 Codex 帳號目錄：{error}"))?;
+            if !canonical_home.starts_with(&canonical_root) {
+                return Err("拒絕刪除不屬於 HUD 管理範圍的 Codex 帳號目錄。".to_string());
+            }
+            fs::remove_dir_all(&canonical_home)
+                .map_err(|error| format!("無法刪除 Codex 帳號目錄：{error}"))?;
+        }
+    }
+    let _ = fs::remove_file(app_data_dir(&app)?.join(profile_history_name(&profile_id)));
+
+    if let Ok(mut latest) = state.latest.lock() {
+        latest.remove(&profile_id);
+    }
+    if let Ok(mut last_error) = state.last_error.lock() {
+        last_error.remove(&profile_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn get_usage_snapshot(
     app: AppHandle,
     state: tauri::State<'_, Arc<MonitorState>>,
+    profile_id: Option<String>,
     force: Option<bool>,
 ) -> Result<UsageSnapshot, String> {
     let monitor_state = state.inner().clone();
+    let profile = find_profile(&app, profile_id.as_deref().unwrap_or("default"))?;
     tauri::async_runtime::spawn_blocking(move || {
-        refresh_and_cache(&app, &monitor_state, force.unwrap_or(false))
+        refresh_and_cache(&app, &monitor_state, &profile, force.unwrap_or(false))
     })
     .await
     .map_err(|error| format!("背景額度工作失敗：{error}"))?
+}
+
+#[tauri::command]
+async fn get_all_usage_snapshots(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    force: Option<bool>,
+) -> Result<Vec<ProfileUsageSnapshot>, String> {
+    let monitor_state = state.inner().clone();
+    let profiles = load_profiles(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        profiles
+            .into_iter()
+            .map(|profile| profile_usage_snapshot(&app, &monitor_state, profile, force.unwrap_or(false)))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| format!("背景多帳號額度工作失敗：{error}"))
 }
 
 fn toggle_main_window(app: &AppHandle) {
@@ -711,7 +997,11 @@ pub fn run() {
                         let app_handle = app.clone();
                         let monitor_state = app.state::<Arc<MonitorState>>().inner().clone();
                         thread::spawn(move || {
-                            let _ = refresh_and_cache(&app_handle, &monitor_state, true);
+                            if let Ok(profiles) = load_profiles(&app_handle) {
+                                for profile in profiles {
+                                    let _ = refresh_and_cache(&app_handle, &monitor_state, &profile, true);
+                                }
+                            }
                         });
                     }
                     "quit" => app.exit(0),
@@ -738,13 +1028,25 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let monitor_state = app.state::<Arc<MonitorState>>().inner().clone();
             thread::spawn(move || loop {
-                let _ = refresh_and_cache(&app_handle, &monitor_state, true);
+                if let Ok(profiles) = load_profiles(&app_handle) {
+                    for profile in profiles {
+                        let _ = refresh_and_cache(&app_handle, &monitor_state, &profile, true);
+                    }
+                }
                 thread::sleep(Duration::from_secs(180));
             });
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_usage_snapshot])
+        .invoke_handler(tauri::generate_handler![
+            list_codex_profiles,
+            create_codex_profile,
+            start_codex_profile_login,
+            codex_profile_login_status,
+            delete_codex_profile,
+            get_usage_snapshot,
+            get_all_usage_snapshots
+        ])
         .run(tauri::generate_context!())
         .expect("Codex Usage HUD 啟動失敗");
 }
@@ -755,7 +1057,7 @@ mod tests {
 
     #[test]
     fn app_server_probe_returns_account_and_quota() {
-        let probe = probe_codex().expect("本機 Codex app-server 應可讀取帳號資料");
+        let probe = probe_codex(&default_profile()).expect("本機 Codex app-server 應可讀取帳號資料");
         assert!(probe.account.account.is_some(), "應取得目前 ChatGPT 帳號");
 
         let has_bucket = probe
