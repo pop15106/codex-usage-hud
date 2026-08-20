@@ -3,9 +3,7 @@
   color-scheme: light;
   --accent: #79bfff;
   --accent-rgb: 121 191 255;
-  --glass-opacity: 0.58;
-  --glass-blur: 22px;
-  --glass-saturation: 128%;
+  --glass-opacity: 0.82;
   --glass-base: 245 251 255;
   --glass-secondary: 226 241 249;
   --text: 26 43 55;
@@ -62,7 +60,11 @@ button {
 .hud-shell {
   width: 100%;
   height: 100%;
-  padding: 12px;
+  padding: 8px;
+}
+
+[data-tauri-drag-region] {
+  cursor: move;
 }
 
 .glass-panel {
@@ -73,28 +75,16 @@ button {
   height: 100%;
   overflow: hidden;
   border: 1px solid rgb(var(--line) / 0.5);
-  border-radius: 24px;
+  border-radius: 18px;
   color: rgb(var(--text));
-  background:
-    linear-gradient(145deg, rgb(var(--glass-base) / var(--glass-opacity)), rgb(var(--glass-secondary) / calc(var(--glass-opacity) * 0.76))),
-    rgb(var(--glass-base) / 0.14);
+  background: linear-gradient(
+    145deg,
+    rgb(var(--glass-base) / var(--glass-opacity)),
+    rgb(var(--glass-secondary) / var(--glass-opacity))
+  );
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.6),
-    inset 0 -1px 0 rgb(255 255 255 / 0.12),
-    0 16px 42px rgb(var(--shadow) / 0.15);
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
-}
-
-.glass-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 9% 0%, rgb(255 255 255 / 0.7), transparent 30%),
-    radial-gradient(circle at 92% 12%, rgb(var(--accent-rgb) / 0.16), transparent 34%);
-  opacity: 0.72;
+    inset 0 1px 0 rgb(255 255 255 / 0.48),
+    0 8px 24px rgb(var(--shadow) / 0.12);
 }
 
 .topbar,
@@ -108,22 +98,22 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 72px;
-  padding: 15px 16px 11px;
+  gap: 8px;
+  min-height: 54px;
+  padding: 9px 10px 7px;
 }
 
 .brand {
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 10px;
+  gap: 8px;
 }
 
 .brand-orb {
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   border-radius: 50%;
   background:
     radial-gradient(circle at 36% 32%, rgb(255 255 255 / 0.92), transparent 22%),
@@ -139,16 +129,16 @@ button {
 
 .brand h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: 15px;
   line-height: 1.1;
   font-weight: 650;
   letter-spacing: -0.02em;
 }
 
 .brand p {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   color: rgb(var(--muted));
-  font-size: 11px;
+  font-size: 9px;
 }
 
 .plan-badge,
@@ -170,17 +160,17 @@ button {
 .top-actions {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
 }
 
 .icon-button {
   display: grid;
-  width: 27px;
-  height: 27px;
+  width: 24px;
+  height: 24px;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   color: rgb(var(--muted));
   background: transparent;
   cursor: pointer;
@@ -201,9 +191,9 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 7px;
+  padding: 3px 6px;
   color: rgb(var(--muted));
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .status-chip i {
@@ -227,16 +217,16 @@ button {
 .content-area {
   min-height: 0;
   flex: 1;
-  padding: 0 12px;
+  padding: 0 8px 8px;
 }
 
 .quota-list {
   display: flex;
-  max-height: 430px;
+  max-height: 150px;
   flex-direction: column;
-  gap: 9px;
+  gap: 6px;
   overflow-y: auto;
-  padding: 2px 2px 6px;
+  padding: 1px;
   scrollbar-width: none;
 }
 
@@ -246,10 +236,10 @@ button {
 
 .quota-card {
   position: relative;
-  padding: 12px 13px 11px;
+  padding: 9px 10px 8px;
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.46);
-  border-radius: 17px;
+  border-radius: 14px;
   background: rgb(255 255 255 / 0.18);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.38),
@@ -284,12 +274,12 @@ body[data-tone="smoke"] .settings-panel {
 
 .quota-title-wrap {
   min-width: 0;
-  gap: 9px;
+  gap: 7px;
 }
 
 .window-pill {
-  min-width: 37px;
-  padding: 5px 6px;
+  min-width: 32px;
+  padding: 4px 5px;
   color: var(--accent);
   font-size: 10px;
   font-weight: 700;
@@ -300,7 +290,7 @@ body[data-tone="smoke"] .settings-panel {
 .quota-title {
   max-width: 210px;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -324,7 +314,7 @@ body[data-tone="smoke"] .settings-panel {
 }
 
 .remaining-block strong {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 660;
   letter-spacing: -0.04em;
 }
@@ -335,8 +325,8 @@ body[data-tone="smoke"] .settings-panel {
 }
 
 .progress-track {
-  height: 8px;
-  margin-top: 10px;
+  height: 6px;
+  margin-top: 8px;
   overflow: hidden;
   border-radius: 999px;
   background: rgb(var(--text) / 0.075);
@@ -362,12 +352,12 @@ body[data-tone="smoke"] .settings-panel {
 }
 
 .quota-foot {
-  margin-top: 7px;
+  margin-top: 6px;
 }
 
 .quota-insight {
-  margin-top: 5px;
-  padding-top: 6px;
+  margin-top: 4px;
+  padding-top: 5px;
   border-top: 1px solid rgb(var(--text) / 0.055);
 }
 
@@ -429,7 +419,7 @@ body[data-tone="smoke"] .settings-panel {
 .error-state,
 .empty-state {
   display: flex;
-  min-height: 290px;
+  min-height: 105px;
   align-items: center;
   justify-content: center;
   flex-direction: column;
@@ -487,14 +477,13 @@ body[data-tone="smoke"] .settings-panel {
 .settings-panel {
   position: absolute;
   z-index: 4;
-  inset: 8px;
-  padding: 17px;
+  inset: 6px;
+  padding: 12px;
   overflow-y: auto;
   border: 1px solid rgb(255 255 255 / 0.58);
-  border-radius: 20px;
-  background: rgb(var(--glass-base) / 0.82);
-  box-shadow: 0 16px 42px rgb(var(--shadow) / 0.16);
-  backdrop-filter: blur(28px) saturate(135%);
+  border-radius: 14px;
+  background: rgb(var(--glass-base) / 0.97);
+  box-shadow: 0 10px 30px rgb(var(--shadow) / 0.16);
   opacity: 0;
   pointer-events: none;
   transform: translateY(8px) scale(0.985);

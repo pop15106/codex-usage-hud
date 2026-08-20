@@ -8,9 +8,7 @@ const appWindow = getCurrentWindow();
 
 const DEFAULT_SETTINGS = {
   accent: "#79BFFF",
-  opacity: 58,
-  blur: 22,
-  saturation: 128,
+  opacity: 82,
   tone: "ice",
   alwaysOnTop: true,
   autostart: false,
@@ -58,8 +56,6 @@ function applySettings() {
   root.style.setProperty("--accent", state.settings.accent);
   root.style.setProperty("--accent-rgb", hexToRgb(state.settings.accent));
   root.style.setProperty("--glass-opacity", String(state.settings.opacity / 100));
-  root.style.setProperty("--glass-blur", `${state.settings.blur}px`);
-  root.style.setProperty("--glass-saturation", `${state.settings.saturation}%`);
   document.body.dataset.tone = state.settings.tone;
   appWindow.setAlwaysOnTop(Boolean(state.settings.alwaysOnTop)).catch(() => {});
 }
@@ -87,14 +83,6 @@ function formatWindow(minutes) {
   if (minutes % 1440 === 0) return `${minutes / 1440}D`;
   if (minutes % 60 === 0) return `${minutes / 60}H`;
   return `${minutes}M`;
-}
-
-function formatCompactNumber(value) {
-  if (!Number.isFinite(Number(value))) return "—";
-  return new Intl.NumberFormat("zh-TW", {
-    notation: "compact",
-    maximumFractionDigits: 1
-  }).format(Number(value));
 }
 
 function formatCountdown(epochSeconds) {
@@ -127,8 +115,18 @@ function riskLabel(risk) {
   return "穩定";
 }
 
+function isCodexWindow(item) {
+  const limitId = String(item?.limitId ?? "").trim().toLowerCase();
+  const limitName = String(item?.limitName ?? "").trim().toLowerCase();
+  return limitId === "codex" || limitName === "codex";
+}
+
+function visibleWindows() {
+  return (state.snapshot?.windows ?? []).filter(isCodexWindow);
+}
+
 function overallRisk() {
-  const windows = state.snapshot?.windows ?? [];
+  const windows = visibleWindows();
   if (windows.some((item) => item.risk === "critical")) return "critical";
   if (windows.some((item) => item.risk === "warning")) return "warning";
   return "safe";
@@ -178,7 +176,7 @@ function renderSettings() {
       <div class="settings-heading">
         <div>
           <h2>外觀與行為</h2>
-          <p>調成你喜歡的玻璃質感</p>
+          <p>調整 HUD 顏色與透明度</p>
         </div>
         <button class="icon-button" id="close-settings" aria-label="關閉設定">×</button>
       </div>
@@ -205,9 +203,7 @@ function renderSettings() {
         </div>
       </div>
 
-      ${renderSlider("opacity", "透明度", s.opacity, 25, 90, "%")}
-      ${renderSlider("blur", "霧化", s.blur, 0, 32, "px")}
-      ${renderSlider("saturation", "玻璃飽和度", s.saturation, 80, 170, "%")}
+      ${renderSlider("opacity", "透明度", s.opacity, 40, 100, "%")}
 
       <div class="setting-switches">
         <label class="switch-row">
@@ -220,7 +216,7 @@ function renderSettings() {
         </label>
       </div>
 
-      <button class="reset-style-button" id="reset-style">恢復冰霧預設值</button>
+      <button class="reset-style-button" id="reset-style">恢復預設值</button>
     </section>
   `;
 }
@@ -239,15 +235,14 @@ function render() {
   const risk = overallRisk();
   const snapshot = state.snapshot;
   const account = snapshot?.account;
-  const windows = snapshot?.windows ?? [];
-  const todayTokens = snapshot?.tokenUsage?.todayTokens;
+  const windows = visibleWindows();
 
   root.innerHTML = `
     <main class="hud-shell" data-tauri-drag-region>
       <section class="glass-panel" data-tauri-drag-region>
         <header class="topbar" data-tauri-drag-region>
           <div class="brand" data-tauri-drag-region>
-            <div class="brand-orb" aria-hidden="true"></div>
+            <div class="brand-orb" data-tauri-drag-region aria-hidden="true"></div>
             <div data-tauri-drag-region>
               <div class="brand-line" data-tauri-drag-region>
                 <h1 data-tauri-drag-region>Codex</h1>
@@ -281,27 +276,8 @@ function render() {
             <div class="quota-list">
               ${windows.length ? windows.map(renderWindow).join("") : `<div class="empty-state">目前沒有可顯示的 quota bucket。</div>`}
             </div>
-            <div class="mini-stats">
-              <div class="mini-stat">
-                <span>今日 Tokens</span>
-                <strong>${formatCompactNumber(todayTokens)}</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Lifetime</span>
-                <strong>${formatCompactNumber(snapshot?.tokenUsage?.lifetimeTokens)}</strong>
-              </div>
-              <div class="mini-stat">
-                <span>更新</span>
-                <strong>${snapshot?.sampledAt ? new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(snapshot.sampledAt * 1000)) : "—"}</strong>
-              </div>
-            </div>
           `}
         </section>
-
-        <footer class="hud-footer" data-tauri-drag-region>
-          <span>${snapshot?.source ? escapeHtml(snapshot.source) : "codex app-server"}</span>
-          <span>${state.loading && snapshot ? "同步中…" : "每 3 分鐘同步"}</span>
-        </footer>
 
         ${renderSettings()}
       </section>
