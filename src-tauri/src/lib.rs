@@ -131,6 +131,8 @@ struct TokenUsageSnapshot {
     current_streak_days: Option<u64>,
     longest_streak_days: Option<u64>,
     today_tokens: Option<u64>,
+    latest_daily_usage_date: Option<String>,
+    usage_data_lag_days: Option<i64>,
     daily_usage_buckets: Vec<DailyUsageBucket>,
 }
 
@@ -824,12 +826,17 @@ fn collect_snapshot(app: &AppHandle, profile: &CodexProfile) -> Result<UsageSnap
 
     let mut daily = probe.usage.daily_usage_buckets.unwrap_or_default();
     daily.sort_by(|left, right| left.start_date.cmp(&right.start_date));
-    let today = Local::now().date_naive().to_string();
+    let today_date = Local::now().date_naive();
+    let today = today_date.to_string();
     let today_tokens = daily
         .iter()
         .find(|bucket| bucket.start_date == today)
-        .map(|bucket| bucket.tokens)
-        .or(Some(0));
+        .map(|bucket| bucket.tokens);
+    let latest_daily_usage_date = daily.last().map(|bucket| bucket.start_date.clone());
+    let usage_data_lag_days = latest_daily_usage_date
+        .as_deref()
+        .and_then(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+        .map(|date| (today_date - date).num_days().max(0));
     if daily.len() > 14 {
         daily = daily.split_off(daily.len() - 14);
     }
@@ -844,6 +851,8 @@ fn collect_snapshot(app: &AppHandle, profile: &CodexProfile) -> Result<UsageSnap
         current_streak_days: summary.as_ref().and_then(|value| value.current_streak_days),
         longest_streak_days: summary.as_ref().and_then(|value| value.longest_streak_days),
         today_tokens,
+        latest_daily_usage_date,
+        usage_data_lag_days,
         daily_usage_buckets: daily,
     };
 

@@ -1,6 +1,6 @@
 [package]
 name = "codex-usage-hud"
-version = "0.3.2"
+version = "0.3.3"
 description = "Lightweight Windows HUD for Codex subscription usage and reset forecasts"
 authors = ["pop15106"]
 edition = "2021"

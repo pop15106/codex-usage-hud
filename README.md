@@ -13,7 +13,7 @@
 - 動態辨識所有 rate-limit bucket，不把 5H / Weekly 規則寫死。
 - 精簡 HUD 只顯示 `Codex` quota，避免其他 bucket 佔用桌面空間。
 - 顯示剩餘百分比、Reset 倒數與實際 Reset 時間。
-- 底部固定保留今日 Tokens / Lifetime / 更新時間三格摘要。
+- 底部固定保留今日 Tokens / Lifetime / Token 資料新鮮度三格摘要；官方 usage 尚未回報今天時顯示 `—`，不再誤顯示 `0`。
 - 使用本機 SQLite 保存 quota 採樣，推算 Burn Rate、ETA 與 ETA 信心度。
 - ETA 只有在樣本數、時間跨度與實際消耗差都成熟後才參與風險判斷，避免短期波動被過度外推。
 - 80% 以上剩餘額度原則上維持穩定；低額度、成熟 ETA 提前耗盡或 Codex 官方 hard limit 才提高警示。
@@ -21,13 +21,13 @@
 - 無標題列、可拖曳、可自由縮放、半透明、Always-on-top 的 Compact HUD。
 - 記住最後的視窗位置與大小，重新開啟後自動恢復。
 - 一鍵切換超迷你模式，縮成只保留核心 quota 的小型 HUD。
-- 顯示今日 Tokens、Lifetime Tokens 與最後更新時間。
+- 顯示官方已回報的今日 Tokens、Lifetime Tokens，並標示 Token usage 最新回報日期。
 - 支援多帳號 Codex Home：每個額外帳號使用獨立 `CODEX_HOME` 與獨立歷史資料庫。
-- 帳號總覽同時顯示各帳號的方案類型、Codex window 額度、Reset、ETA、風險與今日 Tokens。
-- 外層總覽提供全部帳號今日 Tokens 總量、最高風險帳號與最快 Reset；點進帳號後才顯示該帳號的三格摘要與詳細 quota。
+- 帳號總覽同時顯示各帳號的方案類型、Codex window 額度、Reset、ETA、風險與官方已回報的今日 Tokens。
+- 外層總覽提供全部帳號「已回報」今日 Tokens 總量、最高風險帳號與最快 Reset；點進帳號後才顯示該帳號的三格摘要與詳細 quota。
 - 新增帳號時由 HUD 啟動官方 `codex login`；認證完成後才正式加入帳號清單，取消或逾時不會留下半成品帳號。登入憑證仍由 Codex CLI 自己保存，HUD 不複製 token。
 - 點擊帳號列會一鍵切換 HUD 的監看帳號；不會修改其他獨立 Codex CLI / VS Code 行程的 `CODEX_HOME` 或登入狀態。
-- 近 7 天 Token 使用趨勢圖，直接讀取目前選取帳號的本機 Codex usage 摘要。
+- 近 7 天 Token 使用趨勢圖會以「官方最新已回報日期」為終點，避免把尚未回報的日期誤畫成 0。
 - 額度偏低、危險與恢復時可使用 Windows 系統通知。
 - 設定模式使用獨立不透底面板，並暫時放大視窗；關閉後恢復原本 HUD 大小。
 - 移除 Windows Acrylic 與 backdrop blur，避免桌面背景出現霧化區塊。

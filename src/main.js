@@ -309,12 +309,13 @@ function getSevenDayUsage(snapshot = state.snapshot) {
   const tokenMap = new Map(
     (snapshot?.tokenUsage?.dailyUsageBuckets ?? []).map((item) => [item.startDate, Number(item.tokens) || 0])
   );
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const reportedThrough = parseLocalDateKey(snapshot?.tokenUsage?.latestDailyUsageDate);
+  const anchor = reportedThrough ?? new Date();
+  anchor.setHours(0, 0, 0, 0);
 
   return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(today);
-    date.setDate(today.getDate() - (6 - index));
+    const date = new Date(anchor);
+    date.setDate(anchor.getDate() - (6 - index));
     const key = localDateKey(date);
     return {
       key,
@@ -370,6 +371,43 @@ function formatCompactNumber(value) {
     notation: "compact",
     maximumFractionDigits: 1
   }).format(Number(value));
+}
+
+function formatOptionalCompactNumber(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return formatCompactNumber(value);
+}
+
+function parseLocalDateKey(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? ""));
+  if (!match) return null;
+  const [, year, month, day] = match;
+  return new Date(Number(year), Number(month) - 1, Number(day));
+}
+
+function formatUsageDate(value) {
+  const date = parseLocalDateKey(value);
+  return date ? `${date.getMonth() + 1}/${date.getDate()}` : "—";
+}
+
+function usageFreshnessText(snapshot = state.snapshot) {
+  const tokenUsage = snapshot?.tokenUsage;
+  const latestDate = tokenUsage?.latestDailyUsageDate;
+  if (!latestDate) return "尚無資料";
+  const lagDays = Number(tokenUsage?.usageDataLagDays);
+  if (Number.isFinite(lagDays) && lagDays > 0) return `截至 ${formatUsageDate(latestDate)}`;
+  return "今日已回報";
+}
+
+function usageFreshnessTitle(snapshot = state.snapshot) {
+  const tokenUsage = snapshot?.tokenUsage;
+  const latestDate = tokenUsage?.latestDailyUsageDate;
+  if (!latestDate) return "Codex 官方 account/usage/read 尚未提供每日 Token 明細。";
+  const lagDays = Number(tokenUsage?.usageDataLagDays);
+  if (Number.isFinite(lagDays) && lagDays > 0) {
+    return `Codex 官方 Token usage 明細目前回報至 ${latestDate}，落後本機日期 ${lagDays} 天。`;
+  }
+  return `Codex 官方 Token usage 明細已回報至 ${latestDate}。`;
 }
 
 function formatCountdown(epochSeconds) {
@@ -475,10 +513,12 @@ function renderAccountOverview() {
     return { profile, usage, snapshot: usage?.snapshot ?? null, error: usage?.error ?? null };
   });
   const validEntries = entries.filter((entry) => entry.snapshot);
-  const totalToday = validEntries.reduce(
-    (sum, entry) => sum + (Number(entry.snapshot?.tokenUsage?.todayTokens) || 0),
-    0
+  const reportedTodayEntries = validEntries.filter(
+    (entry) => entry.snapshot?.tokenUsage?.todayTokens !== null && entry.snapshot?.tokenUsage?.todayTokens !== undefined
   );
+  const totalToday = reportedTodayEntries.length
+    ? reportedTodayEntries.reduce((sum, entry) => sum + Number(entry.snapshot.tokenUsage.todayTokens), 0)
+    : null;
   const severity = { safe: 0, warning: 1, critical: 2 };
   const worst = validEntries.reduce((best, entry) => {
     if (!best) return entry;
@@ -494,7 +534,7 @@ function renderAccountOverview() {
       <div class="account-summary-grid">
         <div class="account-summary-card">
           <span>今日總 Tokens</span>
-          <strong>${formatCompactNumber(totalToday)}</strong>
+          <strong title="僅加總 Codex 官方已回報今日 Token bucket 的帳號。">${formatOptionalCompactNumber(totalToday)}</strong>
         </div>
         <div class="account-summary-card">
           <span>風險最高</span>
@@ -546,7 +586,7 @@ function renderAccountOverview() {
               </div>
               <div class="account-row-meta">
                 <span>${escapeHtml(windowSummary)}</span>
-                <span>今日 ${formatCompactNumber(snapshot?.tokenUsage?.todayTokens)}</span>
+                <span title="${escapeHtml(usageFreshnessTitle(snapshot))}">今日 ${formatOptionalCompactNumber(snapshot?.tokenUsage?.todayTokens)}</span>
                 <span>${primary?.etaExhaustedAt ? `ETA ${escapeHtml(formatCountdown(primary.etaExhaustedAt))}` : "ETA 學習中"}</span>
                 <div class="account-row-actions">
                   ${!profile.isDefault && (requiresLogin || error) ? `<button class="account-action" data-login-profile="${escapeHtml(profile.id)}" ${state.profileActionLoading ? "disabled" : ""}>登入</button>` : ""}
@@ -667,7 +707,7 @@ function renderTrendPanel() {
           `;
         }).join("")}
       </div>
-      <p class="trend-note">資料來自本機 Codex usage 摘要，不會上傳到第三方。</p>
+      <p class="trend-note">資料來自 Codex 官方 usage 摘要；圖表以「最新已回報日期」為終點。${state.snapshot?.tokenUsage?.usageDataLagDays > 0 ? `目前 ${escapeHtml(usageFreshnessText(state.snapshot))}，尚未回報的日期不會當成 0。` : ""}</p>
     </section>
   `;
 }
@@ -996,17 +1036,17 @@ function render() {
               ${windows.length ? windows.map(renderWindow).join("") : `<div class="empty-state">目前沒有可顯示的 quota bucket。</div>`}
             </div>
             <div class="mini-stats">
-              <div class="mini-stat">
+              <div class="mini-stat" title="${escapeHtml(usageFreshnessTitle(snapshot))}">
                 <span>今日 Tokens</span>
-                <strong>${formatCompactNumber(todayTokens)}</strong>
+                <strong>${formatOptionalCompactNumber(todayTokens)}</strong>
               </div>
-              <div class="mini-stat">
+              <div class="mini-stat" title="${escapeHtml(usageFreshnessTitle(snapshot))}">
                 <span>Lifetime</span>
-                <strong>${formatCompactNumber(snapshot?.tokenUsage?.lifetimeTokens)}</strong>
+                <strong>${formatOptionalCompactNumber(snapshot?.tokenUsage?.lifetimeTokens)}</strong>
               </div>
-              <div class="mini-stat">
-                <span>更新</span>
-                <strong>${snapshot?.sampledAt ? new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(snapshot.sampledAt * 1000)) : "—"}</strong>
+              <div class="mini-stat" title="${escapeHtml(usageFreshnessTitle(snapshot))}">
+                <span>Token 資料</span>
+                <strong>${escapeHtml(usageFreshnessText(snapshot))}</strong>
               </div>
             </div>
           `}
