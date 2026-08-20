@@ -397,6 +397,7 @@ body[data-tone="smoke"] .settings-panel {
 .mini-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  flex: 0 0 auto;
   gap: 7px;
   margin: 8px 2px 0;
 }
@@ -494,16 +495,28 @@ body[data-tone="smoke"] .settings-panel {
   cursor: pointer;
 }
 
+.glass-panel.settings-mode {
+  background: rgb(var(--glass-base));
+}
+
+.glass-panel.settings-mode .topbar,
+.glass-panel.settings-mode .content-area {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .settings-panel {
   position: absolute;
-  z-index: 4;
+  z-index: 30;
   inset: 6px;
-  padding: 12px;
+  padding: 16px;
   overflow-y: auto;
-  border: 1px solid rgb(255 255 255 / 0.58);
+  border: 1px solid rgb(var(--text) / 0.12);
   border-radius: 14px;
-  background: rgb(var(--glass-base) / 0.97);
-  box-shadow: 0 10px 30px rgb(var(--shadow) / 0.16);
+  color: rgb(var(--text));
+  background: rgb(var(--glass-base));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.42);
   opacity: 0;
   pointer-events: none;
   transform: translateY(8px) scale(0.985);
@@ -519,6 +532,15 @@ body[data-tone="smoke"] .settings-panel {
   opacity: 1;
   pointer-events: auto;
   transform: none;
+}
+
+body[data-tone="smoke"] .settings-panel {
+  background: rgb(var(--glass-base));
+}
+
+.settings-panel .icon-button {
+  border-color: rgb(var(--text) / 0.08);
+  background: rgb(var(--text) / 0.045);
 }
 
 .settings-heading {
@@ -557,19 +579,20 @@ body[data-tone="smoke"] .settings-panel {
 
 .tone-button {
   flex: 1;
-  padding: 7px 8px;
-  border: 1px solid rgb(255 255 255 / 0.46);
+  padding: 8px;
+  border: 1px solid rgb(var(--text) / 0.12);
   border-radius: 10px;
   color: rgb(var(--muted));
   font-size: 10px;
-  background: rgb(255 255 255 / 0.13);
+  background: rgb(var(--text) / 0.045);
   cursor: pointer;
 }
 
 .tone-button.active {
-  border-color: rgb(var(--accent-rgb) / 0.42);
+  border-color: rgb(var(--accent-rgb) / 0.72);
   color: rgb(var(--text));
-  background: rgb(var(--accent-rgb) / 0.12);
+  background: rgb(var(--accent-rgb) / 0.2);
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.16);
 }
 
 .accent-swatch,
@@ -782,6 +805,12 @@ body[data-tone="smoke"] .settings-panel {
   .quota-foot,
   .quota-insight {
     font-size: 9px;
+  }
+}
+
+@media (max-height: 245px) {
+  .mini-stats {
+    display: none;
   }
 }
 

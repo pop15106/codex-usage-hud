@@ -1,6 +1,7 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 
@@ -29,6 +30,7 @@ const state = {
   error: null,
   settingsOpen: false,
   settings: loadSettings(),
+  preSettingsSize: null,
   nowTimer: null
 };
 
@@ -83,6 +85,14 @@ function formatWindow(minutes) {
   if (minutes % 1440 === 0) return `${minutes / 1440}D`;
   if (minutes % 60 === 0) return `${minutes / 60}H`;
   return `${minutes}M`;
+}
+
+function formatCompactNumber(value) {
+  if (!Number.isFinite(Number(value))) return "—";
+  return new Intl.NumberFormat("zh-TW", {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(Number(value));
 }
 
 function formatCountdown(epochSeconds) {
@@ -243,16 +253,54 @@ function renderResizeHandles() {
   `;
 }
 
+async function openSettings() {
+  try {
+    const physicalSize = await appWindow.innerSize();
+    const scaleFactor = await appWindow.scaleFactor();
+    const logicalSize = physicalSize.toLogical(scaleFactor);
+    state.preSettingsSize = {
+      width: logicalSize.width,
+      height: logicalSize.height
+    };
+
+    await appWindow.setSize(new LogicalSize(
+      Math.max(logicalSize.width, 420),
+      Math.max(logicalSize.height, 420)
+    ));
+  } catch (error) {
+    console.error("無法調整設定視窗大小", error);
+  }
+
+  state.settingsOpen = true;
+  render();
+}
+
+async function closeSettings() {
+  state.settingsOpen = false;
+  render();
+
+  const previousSize = state.preSettingsSize;
+  state.preSettingsSize = null;
+  if (!previousSize) return;
+
+  try {
+    await appWindow.setSize(new LogicalSize(previousSize.width, previousSize.height));
+  } catch (error) {
+    console.error("無法恢復 HUD 大小", error);
+  }
+}
+
 function render() {
   const root = document.querySelector("#app");
   const risk = overallRisk();
   const snapshot = state.snapshot;
   const account = snapshot?.account;
   const windows = visibleWindows();
+  const todayTokens = snapshot?.tokenUsage?.todayTokens;
 
   root.innerHTML = `
     <main class="hud-shell" data-tauri-drag-region>
-      <section class="glass-panel" data-tauri-drag-region>
+      <section class="glass-panel ${state.settingsOpen ? "settings-mode" : ""}" data-tauri-drag-region>
         <header class="topbar" data-tauri-drag-region>
           <div class="brand" data-tauri-drag-region>
             <div class="brand-orb" data-tauri-drag-region aria-hidden="true"></div>
@@ -289,11 +337,25 @@ function render() {
             <div class="quota-list">
               ${windows.length ? windows.map(renderWindow).join("") : `<div class="empty-state">目前沒有可顯示的 quota bucket。</div>`}
             </div>
+            <div class="mini-stats">
+              <div class="mini-stat">
+                <span>今日 Tokens</span>
+                <strong>${formatCompactNumber(todayTokens)}</strong>
+              </div>
+              <div class="mini-stat">
+                <span>Lifetime</span>
+                <strong>${formatCompactNumber(snapshot?.tokenUsage?.lifetimeTokens)}</strong>
+              </div>
+              <div class="mini-stat">
+                <span>更新</span>
+                <strong>${snapshot?.sampledAt ? new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(snapshot.sampledAt * 1000)) : "—"}</strong>
+              </div>
+            </div>
           `}
         </section>
 
         ${renderSettings()}
-        ${renderResizeHandles()}
+        ${state.settingsOpen ? "" : renderResizeHandles()}
       </section>
     </main>
   `;
@@ -304,14 +366,8 @@ function render() {
 function bindEvents() {
   document.querySelector("#refresh")?.addEventListener("click", () => refresh(true));
   document.querySelector("#retry")?.addEventListener("click", () => refresh(true));
-  document.querySelector("#open-settings")?.addEventListener("click", () => {
-    state.settingsOpen = true;
-    render();
-  });
-  document.querySelector("#close-settings")?.addEventListener("click", () => {
-    state.settingsOpen = false;
-    render();
-  });
+  document.querySelector("#open-settings")?.addEventListener("click", () => openSettings());
+  document.querySelector("#close-settings")?.addEventListener("click", () => closeSettings());
   document.querySelector("#hide-window")?.addEventListener("click", () => appWindow.hide());
 
   document.querySelectorAll("[data-resize-direction]").forEach((handle) => {

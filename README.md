@@ -2,7 +2,7 @@
 
 一個輕量、Local First 的 Windows 桌面懸浮工具，用來顯示 ChatGPT Codex 訂閱額度、重置時間、使用速度與預估耗盡時間。
 
-> 目前狀態：`v0.1.2` MVP
+> 目前狀態：`v0.1.3` MVP
 
 ## 功能
 
@@ -14,6 +14,8 @@
 - 判斷「預估耗盡時間是否早於 Reset」，以穩定 / 注意 / 危險顯示。
 - Windows 系統匣常駐，HUD 可隱藏而不退出。
 - 無標題列、可拖曳、可自由縮放、半透明、Always-on-top 的 Compact HUD。
+- 顯示今日 Tokens、Lifetime Tokens 與最後更新時間；視窗過矮時自動收斂隱藏。
+- 設定模式使用獨立不透底面板，並暫時放大視窗；關閉後恢復原本 HUD 大小。
 - 移除 Windows Acrylic 與 backdrop blur，避免桌面背景出現霧化區塊。
 - 可調整：
   - 冰霧 / 清透 / 煙霧面板色調
