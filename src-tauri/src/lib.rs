@@ -161,6 +161,8 @@ struct ProfileUsageSnapshot {
 struct MonitorState {
     latest: Mutex<HashMap<String, UsageSnapshot>>,
     last_error: Mutex<HashMap<String, String>>,
+    pending_profiles: Mutex<HashMap<String, CodexProfile>>,
+    login_processes: Mutex<HashMap<String, u32>>,
     probe_lock: Mutex<()>,
 }
 
@@ -222,6 +224,78 @@ fn find_profile(app: &AppHandle, profile_id: &str) -> Result<CodexProfile, Strin
         .into_iter()
         .find(|profile| profile.id == profile_id)
         .ok_or_else(|| format!("找不到 Codex 帳號：{profile_id}"))
+}
+
+fn find_profile_or_pending(
+    app: &AppHandle,
+    state: &Arc<MonitorState>,
+    profile_id: &str,
+) -> Result<CodexProfile, String> {
+    if let Ok(profile) = find_profile(app, profile_id) {
+        return Ok(profile);
+    }
+
+    state
+        .pending_profiles
+        .lock()
+        .map_err(|_| "待認證 Codex 帳號狀態異常".to_string())?
+        .get(profile_id)
+        .cloned()
+        .ok_or_else(|| format!("找不到 Codex 帳號：{profile_id}"))
+}
+
+fn remove_managed_codex_home(app: &AppHandle, home: &str) -> Result<(), String> {
+    let homes_root = app_data_dir(app)?.join("codex-homes");
+    let home_path = PathBuf::from(home);
+    if !home_path.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&homes_root)
+        .map_err(|error| format!("無法建立 Codex 帳號根目錄：{error}"))?;
+    let canonical_root = fs::canonicalize(&homes_root)
+        .map_err(|error| format!("無法驗證 Codex 帳號根目錄：{error}"))?;
+    let canonical_home = fs::canonicalize(&home_path)
+        .map_err(|error| format!("無法驗證 Codex 帳號目錄：{error}"))?;
+    if !canonical_home.starts_with(&canonical_root) {
+        return Err("拒絕刪除不屬於 HUD 管理範圍的 Codex 帳號目錄。".to_string());
+    }
+
+    fs::remove_dir_all(&canonical_home)
+        .map_err(|error| format!("無法刪除 Codex 帳號目錄：{error}"))
+}
+
+fn stop_login_process(state: &Arc<MonitorState>, profile_id: &str) {
+    let pid = state
+        .login_processes
+        .lock()
+        .ok()
+        .and_then(|mut processes| processes.remove(profile_id));
+    let Some(pid) = pid else {
+        return;
+    };
+
+    #[cfg(windows)]
+    {
+        let _ = quiet_command("taskkill")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .arg("/T")
+            .arg("/F")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = quiet_command("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 fn profile_history_name(profile_id: &str) -> String {
@@ -779,14 +853,45 @@ fn list_codex_profiles(app: AppHandle) -> Result<Vec<CodexProfile>, String> {
     load_profiles(&app)
 }
 
+fn profile_login_status(profile: &CodexProfile) -> Result<bool, String> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = quiet_command("cmd.exe");
+        command.args(["/D", "/S", "/C", "codex login status"]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = quiet_command("codex");
+        command.args(["login", "status"]);
+        command
+    };
+
+    apply_profile_env(&mut command, profile);
+    let output = command
+        .output()
+        .map_err(|error| format!("無法檢查 Codex 登入狀態：{error}"))?;
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(text.contains("Logged in"))
+}
+
 #[tauri::command]
-fn create_codex_profile(app: AppHandle, label: String) -> Result<CodexProfile, String> {
-    let mut profiles = load_custom_profiles(&app)?;
+fn create_codex_profile(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    label: String,
+) -> Result<CodexProfile, String> {
+    let saved_profiles = load_custom_profiles(&app)?;
     let id = new_profile_id();
     let home = app_data_dir(&app)?.join("codex-homes").join(&id);
     fs::create_dir_all(&home).map_err(|error| format!("無法建立 Codex 帳號目錄：{error}"))?;
 
-    let fallback_label = format!("帳號 {}", profiles.len() + 2);
+    let fallback_label = format!("帳號 {}", saved_profiles.len() + 2);
     let normalized_label = label.trim();
     let profile = CodexProfile {
         id,
@@ -798,14 +903,22 @@ fn create_codex_profile(app: AppHandle, label: String) -> Result<CodexProfile, S
         codex_home: Some(home.to_string_lossy().to_string()),
         is_default: false,
     };
-    profiles.push(profile.clone());
-    save_custom_profiles(&app, &profiles)?;
+
+    state
+        .pending_profiles
+        .lock()
+        .map_err(|_| "待認證 Codex 帳號狀態異常".to_string())?
+        .insert(profile.id.clone(), profile.clone());
     Ok(profile)
 }
 
 #[tauri::command]
-fn start_codex_profile_login(app: AppHandle, profile_id: String) -> Result<(), String> {
-    let profile = find_profile(&app, &profile_id)?;
+fn start_codex_profile_login(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    profile_id: String,
+) -> Result<(), String> {
+    let profile = find_profile_or_pending(&app, state.inner(), &profile_id)?;
     if profile.is_default {
         return Err("主要帳號請使用既有 Codex CLI 登入；額外帳號才需要從 HUD 建立。".to_string());
     }
@@ -825,43 +938,82 @@ fn start_codex_profile_login(app: AppHandle, profile_id: String) -> Result<(), S
     };
 
     apply_profile_env(&mut command, &profile);
-    command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("無法啟動 Codex 登入：{error}"))?;
+
+    state
+        .login_processes
+        .lock()
+        .map_err(|_| "Codex 登入程序狀態異常".to_string())?
+        .insert(profile.id.clone(), child.id());
     Ok(())
 }
 
 #[tauri::command]
-fn codex_profile_login_status(app: AppHandle, profile_id: String) -> Result<bool, String> {
-    let profile = find_profile(&app, &profile_id)?;
+fn codex_profile_login_status(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    profile_id: String,
+) -> Result<bool, String> {
+    let profile = find_profile_or_pending(&app, state.inner(), &profile_id)?;
+    profile_login_status(&profile)
+}
 
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = quiet_command("cmd.exe");
-        command.args(["/D", "/S", "/C", "codex login status"]);
-        command
-    };
+#[tauri::command]
+fn finalize_codex_profile(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    profile_id: String,
+) -> Result<CodexProfile, String> {
+    let profile = state
+        .pending_profiles
+        .lock()
+        .map_err(|_| "待認證 Codex 帳號狀態異常".to_string())?
+        .get(&profile_id)
+        .cloned()
+        .ok_or_else(|| "找不到待認證 Codex 帳號。".to_string())?;
 
-    #[cfg(not(windows))]
-    let mut command = {
-        let mut command = quiet_command("codex");
-        command.args(["login", "status"]);
-        command
-    };
+    if !profile_login_status(&profile)? {
+        return Err("Codex 登入尚未完成，無法加入帳號清單。".to_string());
+    }
 
-    apply_profile_env(&mut command, &profile);
-    let output = command
-        .output()
-        .map_err(|error| format!("無法檢查 Codex 登入狀態：{error}"))?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(text.contains("Logged in"))
+    stop_login_process(state.inner(), &profile_id);
+    let mut profiles = load_custom_profiles(&app)?;
+    if profiles.iter().all(|item| item.id != profile.id) {
+        profiles.push(profile.clone());
+        save_custom_profiles(&app, &profiles)?;
+    }
+    state
+        .pending_profiles
+        .lock()
+        .map_err(|_| "待認證 Codex 帳號狀態異常".to_string())?
+        .remove(&profile_id);
+    Ok(profile)
+}
+
+#[tauri::command]
+fn cancel_codex_profile_login(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MonitorState>>,
+    profile_id: String,
+) -> Result<(), String> {
+    stop_login_process(state.inner(), &profile_id);
+    let profile = state
+        .pending_profiles
+        .lock()
+        .map_err(|_| "待認證 Codex 帳號狀態異常".to_string())?
+        .remove(&profile_id)
+        .ok_or_else(|| "找不到待認證 Codex 帳號。".to_string())?;
+
+    if let Some(home) = profile.codex_home.as_deref() {
+        // 登入程序可能仍短暫持有檔案；取消新增以「不加入正式清單」為優先，目錄採最佳努力清除。
+        let _ = remove_managed_codex_home(&app, home);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -874,6 +1026,7 @@ fn delete_codex_profile(
         return Err("主要帳號不可從 HUD 刪除。".to_string());
     }
 
+    stop_login_process(state.inner(), &profile_id);
     let mut profiles = load_custom_profiles(&app)?;
     let profile = profiles
         .iter()
@@ -883,20 +1036,8 @@ fn delete_codex_profile(
     profiles.retain(|item| item.id != profile_id);
     save_custom_profiles(&app, &profiles)?;
 
-    if let Some(home) = profile.codex_home {
-        let homes_root = app_data_dir(&app)?.join("codex-homes");
-        let home_path = PathBuf::from(home);
-        if home_path.exists() && homes_root.exists() {
-            let canonical_root = fs::canonicalize(&homes_root)
-                .map_err(|error| format!("無法驗證 Codex 帳號根目錄：{error}"))?;
-            let canonical_home = fs::canonicalize(&home_path)
-                .map_err(|error| format!("無法驗證 Codex 帳號目錄：{error}"))?;
-            if !canonical_home.starts_with(&canonical_root) {
-                return Err("拒絕刪除不屬於 HUD 管理範圍的 Codex 帳號目錄。".to_string());
-            }
-            fs::remove_dir_all(&canonical_home)
-                .map_err(|error| format!("無法刪除 Codex 帳號目錄：{error}"))?;
-        }
+    if let Some(home) = profile.codex_home.as_deref() {
+        remove_managed_codex_home(&app, home)?;
     }
     let _ = fs::remove_file(app_data_dir(&app)?.join(profile_history_name(&profile_id)));
 
@@ -1043,6 +1184,8 @@ pub fn run() {
             create_codex_profile,
             start_codex_profile_login,
             codex_profile_login_status,
+            finalize_codex_profile,
+            cancel_codex_profile_login,
             delete_codex_profile,
             get_usage_snapshot,
             get_all_usage_snapshots

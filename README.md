@@ -2,7 +2,7 @@
 
 一個輕量、Local First 的 Windows 桌面懸浮工具，用來顯示 ChatGPT Codex 訂閱額度、重置時間、使用速度與預估耗盡時間。
 
-> 目前狀態：`v0.3.0`
+> 目前狀態：`v0.3.1`
 
 ## 功能
 
@@ -21,7 +21,7 @@
 - 支援多帳號 Codex Home：每個額外帳號使用獨立 `CODEX_HOME` 與獨立歷史資料庫。
 - 帳號總覽同時顯示各帳號的方案類型、Codex window 額度、Reset、ETA、風險與今日 Tokens。
 - 外層總覽提供全部帳號今日 Tokens 總量、最高風險帳號與最快 Reset；點進帳號後才顯示該帳號的三格摘要與詳細 quota。
-- 新增帳號時由 HUD 啟動官方 `codex login`，登入憑證仍由 Codex CLI 自己保存，HUD 不複製 token。
+- 新增帳號時由 HUD 啟動官方 `codex login`；認證完成後才正式加入帳號清單，取消或逾時不會留下半成品帳號。登入憑證仍由 Codex CLI 自己保存，HUD 不複製 token。
 - 點擊帳號列會一鍵切換 HUD 的監看帳號；不會修改其他獨立 Codex CLI / VS Code 行程的 `CODEX_HOME` 或登入狀態。
 - 近 7 天 Token 使用趨勢圖，直接讀取目前選取帳號的本機 Codex usage 摘要。
 - 額度偏低、危險與恢復時可使用 Windows 系統通知。

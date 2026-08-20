@@ -1168,6 +1168,10 @@ body[data-tone="smoke"] .trend-panel {
 }
 
 .account-login-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin-top: 8px;
   padding: 7px 8px;
   border-radius: 8px;
@@ -1175,6 +1179,15 @@ body[data-tone="smoke"] .trend-panel {
   font-size: 9px;
   line-height: 1.4;
   background: rgb(var(--accent-rgb) / 0.08);
+}
+
+.account-login-banner > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.account-login-banner .account-action {
+  flex: 0 0 auto;
 }
 
 body[data-tone="smoke"] .account-summary-card,

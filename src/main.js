@@ -49,6 +49,7 @@ const state = {
   accountOverview: localStorage.getItem(ACCOUNT_VIEW_KEY) === "true",
   accountViewInitialized: localStorage.getItem(ACCOUNT_VIEW_KEY) !== null,
   loginProfileId: null,
+  pendingProfile: null,
   loginMessage: null,
   profileActionLoading: false,
   loading: true,
@@ -504,7 +505,8 @@ function renderAccountOverview() {
         ${entries.map(({ profile, snapshot, error }) => {
           const windows = codexWindowsFrom(snapshot);
           const primary = primaryCodexWindow(snapshot);
-          const requiresLogin = Boolean(snapshot?.account?.requiresOpenaiAuth) || (!primary && !snapshot);
+          // account/read 的 requiresOpenaiAuth 不是目前登入狀態；只要 app-server 已成功回傳 snapshot，就視為可用帳號。
+          const requiresLogin = !snapshot && !error && !profile.isDefault;
           const risk = snapshot ? snapshotRisk(snapshot) : "safe";
           const remaining = primary ? formatPercent(primary.remainingPercent) : "—";
           const email = snapshot?.account?.email;
@@ -560,7 +562,12 @@ function renderAccountOverview() {
           <input id="new-profile-label" maxlength="40" placeholder="例如：備用帳號" ${state.profileActionLoading ? "disabled" : ""} />
           <button id="add-profile" ${state.profileActionLoading ? "disabled" : ""}>＋ 新增帳號</button>
         </div>
-        ${state.loginMessage ? `<div class="account-login-banner">${escapeHtml(state.loginMessage)}</div>` : ""}
+        ${state.loginMessage ? `
+          <div class="account-login-banner">
+            <span>${escapeHtml(state.loginMessage)}</span>
+            ${state.pendingProfile ? `<button id="cancel-pending-profile" class="account-action danger">取消新增</button>` : ""}
+          </div>
+        ` : ""}
       </div>
     </div>
   `;
@@ -686,33 +693,54 @@ function delay(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function waitForProfileLogin(profile) {
+async function waitForProfileLogin(profile, { pending = false } = {}) {
   state.loginProfileId = profile.id;
-  state.loginMessage = `已開啟 ${profile.label} 的 Codex 官方登入，等待登入完成…`;
+  state.loginMessage = `已開啟 ${profile.label} 的 Codex 官方登入，認證成功後才會加入帳號清單。`;
   render();
 
-  for (let attempt = 0; attempt < 90; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
     await delay(2000);
+    if (state.loginProfileId !== profile.id) return;
+
     try {
       const loggedIn = await invoke("codex_profile_login_status", { profileId: profile.id });
-      if (loggedIn) {
-        state.loginMessage = `${profile.label} 登入完成，正在讀取額度…`;
-        render();
-        await refresh(true);
-        state.loginProfileId = null;
-        state.loginMessage = null;
-        state.profileActionLoading = false;
-        await selectProfile(profile.id);
-        return;
+      if (!loggedIn || state.loginProfileId !== profile.id) continue;
+
+      state.loginMessage = `${profile.label} 認證完成，正在讀取額度…`;
+      render();
+
+      let finalizedProfile = profile;
+      if (pending) {
+        finalizedProfile = await invoke("finalize_codex_profile", { profileId: profile.id });
+        state.pendingProfile = null;
+        state.profiles.push(finalizedProfile);
+        state.profileUsages.push({ profile: finalizedProfile, snapshot: null, error: null });
       }
+
+      state.loginProfileId = null;
+      state.profileActionLoading = false;
+      state.loginMessage = null;
+      await refresh(true);
+      await selectProfile(finalizedProfile.id);
+      return;
     } catch (error) {
       console.error("檢查 Codex 帳號登入狀態失敗", error);
     }
   }
 
-  state.loginProfileId = null;
+  if (pending && state.loginProfileId === profile.id) {
+    try {
+      await invoke("cancel_codex_profile_login", { profileId: profile.id });
+    } catch (error) {
+      console.error("清除未完成 Codex 帳號失敗", error);
+    }
+    state.pendingProfile = null;
+  }
+  if (state.loginProfileId === profile.id) state.loginProfileId = null;
   state.profileActionLoading = false;
-  state.loginMessage = `${profile.label} 尚未完成登入，可稍後按「登入」重試。`;
+  state.loginMessage = pending
+    ? `${profile.label} 認證逾時，未加入帳號清單。`
+    : `${profile.label} 尚未完成登入，可稍後按「登入」重試。`;
   render();
 }
 
@@ -737,25 +765,57 @@ async function startProfileLogin(profileId) {
 }
 
 async function addProfile() {
-  if (state.profileActionLoading || state.loginProfileId) return;
+  if (state.profileActionLoading || state.loginProfileId || state.pendingProfile) return;
   const input = document.querySelector("#new-profile-label");
   const label = input?.value?.trim() ?? "";
 
   state.profileActionLoading = true;
-  state.loginMessage = "正在建立獨立 Codex 帳號環境…";
+  state.loginMessage = "正在建立待認證的 Codex 帳號環境…";
   render();
 
+  let profile = null;
   try {
-    const profile = await invoke("create_codex_profile", { label });
-    state.profiles.push(profile);
-    state.profileUsages.push({ profile, snapshot: null, error: null });
+    profile = await invoke("create_codex_profile", { label });
+    state.pendingProfile = profile;
+    state.loginProfileId = profile.id;
+    state.loginMessage = `${profile.label} 尚未加入帳號清單，正在啟動官方登入…`;
     render();
     await invoke("start_codex_profile_login", { profileId: profile.id });
-    await waitForProfileLogin(profile);
+    await waitForProfileLogin(profile, { pending: true });
   } catch (error) {
+    if (profile?.id) {
+      try {
+        await invoke("cancel_codex_profile_login", { profileId: profile.id });
+      } catch {
+        // 建立流程失敗時盡力清除待認證資料。
+      }
+    }
+    state.pendingProfile = null;
     state.profileActionLoading = false;
     state.loginProfileId = null;
     state.loginMessage = `新增帳號失敗：${String(error)}`;
+    render();
+  }
+}
+
+async function cancelPendingProfile() {
+  const profile = state.pendingProfile;
+  if (!profile) return;
+
+  // 先清除目前輪詢識別，避免登入剛完成時與取消流程競爭。
+  state.loginProfileId = null;
+  state.profileActionLoading = true;
+  state.loginMessage = `正在取消 ${profile.label}…`;
+  render();
+
+  try {
+    await invoke("cancel_codex_profile_login", { profileId: profile.id });
+    state.pendingProfile = null;
+    state.loginMessage = `${profile.label} 已取消，沒有加入帳號清單。`;
+  } catch (error) {
+    state.loginMessage = `取消新增失敗：${String(error)}`;
+  } finally {
+    state.profileActionLoading = false;
     render();
   }
 }
@@ -962,6 +1022,7 @@ function bindEvents() {
   document.querySelector("#retry")?.addEventListener("click", () => refresh(true));
   document.querySelector("#show-accounts")?.addEventListener("click", () => showAccountOverview());
   document.querySelector("#add-profile")?.addEventListener("click", () => addProfile());
+  document.querySelector("#cancel-pending-profile")?.addEventListener("click", () => cancelPendingProfile());
   document.querySelector("#new-profile-label")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") addProfile();
   });
