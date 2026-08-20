@@ -230,6 +230,19 @@ function renderSlider(key, label, value, min, max, suffix) {
   `;
 }
 
+function renderResizeHandles() {
+  return `
+    <div class="resize-handle resize-n" data-resize-direction="North"></div>
+    <div class="resize-handle resize-e" data-resize-direction="East"></div>
+    <div class="resize-handle resize-s" data-resize-direction="South"></div>
+    <div class="resize-handle resize-w" data-resize-direction="West"></div>
+    <div class="resize-handle resize-ne" data-resize-direction="NorthEast"></div>
+    <div class="resize-handle resize-nw" data-resize-direction="NorthWest"></div>
+    <div class="resize-handle resize-se" data-resize-direction="SouthEast" title="拖曳調整大小"></div>
+    <div class="resize-handle resize-sw" data-resize-direction="SouthWest"></div>
+  `;
+}
+
 function render() {
   const root = document.querySelector("#app");
   const risk = overallRisk();
@@ -252,7 +265,7 @@ function render() {
             </div>
           </div>
           <div class="top-actions">
-            <span class="status-chip risk-${risk}"><i></i>${riskLabel(risk)}</span>
+            <span class="status-chip risk-${risk}"><i></i><b>${riskLabel(risk)}</b></span>
             <button class="icon-button ${state.loading ? "is-spinning" : ""}" id="refresh" title="立即重新整理" aria-label="立即重新整理">↻</button>
             <button class="icon-button" id="open-settings" title="設定" aria-label="設定">⚙</button>
             <button class="icon-button" id="hide-window" title="隱藏到系統匣" aria-label="隱藏到系統匣">—</button>
@@ -280,6 +293,7 @@ function render() {
         </section>
 
         ${renderSettings()}
+        ${renderResizeHandles()}
       </section>
     </main>
   `;
@@ -299,6 +313,18 @@ function bindEvents() {
     render();
   });
   document.querySelector("#hide-window")?.addEventListener("click", () => appWindow.hide());
+
+  document.querySelectorAll("[data-resize-direction]").forEach((handle) => {
+    handle.addEventListener("pointerdown", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        await appWindow.startResizeDragging(handle.dataset.resizeDirection);
+      } catch (error) {
+        console.error("無法調整 HUD 大小", error);
+      }
+    });
+  });
 
   document.querySelectorAll("[data-accent]").forEach((button) => {
     button.addEventListener("click", () => updateSetting("accent", button.dataset.accent));
