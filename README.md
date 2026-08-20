@@ -2,7 +2,7 @@
 
 一個輕量、Local First 的 Windows 桌面懸浮工具，用來顯示 ChatGPT Codex 訂閱額度、重置時間、使用速度與預估耗盡時間。
 
-> 目前狀態：`v0.1.3` MVP
+> 目前狀態：`v0.1.4` MVP
 
 ## 功能
 
@@ -10,6 +10,7 @@
 - 動態辨識所有 rate-limit bucket，不把 5H / Weekly 規則寫死。
 - 精簡 HUD 只顯示 `Codex` quota，避免其他 bucket 佔用桌面空間。
 - 顯示剩餘百分比、Reset 倒數與實際 Reset 時間。
+- 底部固定保留今日 Tokens / Lifetime / 更新時間三格摘要。
 - 使用本機 SQLite 保存 quota 採樣，推算 Burn Rate 與 ETA。
 - 判斷「預估耗盡時間是否早於 Reset」，以穩定 / 注意 / 危險顯示。
 - Windows 系統匣常駐，HUD 可隱藏而不退出。
