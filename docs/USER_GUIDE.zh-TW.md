@@ -1,6 +1,6 @@
 # Codex Usage HUD 使用說明書
 
-> 適用版本：`v0.3.3` 以上
+> 適用版本：`v0.3.4` 以上
 >
 > 平台：Windows 10 / 11 x64
 >
@@ -181,7 +181,7 @@ ETA 學習中
 │ ↻ 6天22小時             Reset 8/27 14:31 │
 │ Burn Rate / ETA 信心度               穩定 │
 ├────────────────────────────────────────────┤
-│ 今日 Tokens │ Lifetime │ Token 資料        │
+│ 今日 Tokens │ Lifetime │ Token 資料 │ 刷新時間 │
 └────────────────────────────────────────────┘
 ```
 
@@ -210,11 +210,12 @@ Quota 卡片會顯示：
 - ETA / ETA 信心度。
 - 風險狀態。
 
-### 5.3 底部三格摘要
+### 5.3 底部四格摘要
 
 - `今日 Tokens`：Codex 官方 `account/usage/read` 已回報的「今天」Token bucket。官方尚未回報今天時顯示 `—`，不會用 `0` 代替。
 - `Lifetime`：Codex 官方已回報的累積 Token 總量。
 - `Token 資料`：Token usage 最新回報日期，例如 `截至 8/18`。這一格用來提醒你 Token 統計可能比 quota 額度資料延遲。
+- `刷新時間`：HUD 最後一次成功從 `codex app-server` 取得 quota / usage snapshot 的時間，例如 `11:38`。它代表 HUD 的抓取時間，不代表 Token usage 已更新到該分鐘。
 
 > Quota 與 Token usage 的更新速度不同。`account/rateLimits/read` 可以已經反映最新額度消耗，但 `account/usage/read` 的每日 Token buckets 仍可能落後數天。因此，HUD 不會把「尚未回報」解讀成「今天使用 0 Tokens」。
 

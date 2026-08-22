@@ -1048,6 +1048,10 @@ function render() {
                 <span>Token 資料</span>
                 <strong>${escapeHtml(usageFreshnessText(snapshot))}</strong>
               </div>
+              <div class="mini-stat" title="最後一次成功從 codex app-server 取得額度資料的時間">
+                <span>刷新時間</span>
+                <strong>${snapshot?.sampledAt ? new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(snapshot.sampledAt * 1000)) : "—"}</strong>
+              </div>
             </div>
           `}
         </section>
